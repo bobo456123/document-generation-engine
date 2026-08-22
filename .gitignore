@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.turbo/
+coverage/
+.bizdoc/
+*.db
+*.db-shm
+*.db-wal
+.DS_Store
+.env
+.env.*
+!.env.example

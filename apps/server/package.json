@@ -1,0 +1,5 @@
+{
+  "name": "@bizdoc/server",
+  "private": true,
+  "type": "module"
+}

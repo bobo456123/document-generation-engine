@@ -1,0 +1,102 @@
+{
+  "id": "document:3630d309ee5f90cf",
+  "featureId": "feature:3e467354b60ecc93",
+  "title": "线索转化操作说明",
+  "sourceSnapshotId": "snapshot:deb223a3fc9a3f5c",
+  "sourceCommits": {
+    "frontend": "b38dfdc1351b7f323219cf710fa8d8b807458f2c",
+    "backend": "8473d3ee6fcf87b0f351341a875b3d36ebc51ba6"
+  },
+  "summary": {
+    "text": "将状态为待处理或跟进中的线索转化为客户，并可选择同时创建关联项目。系统最终回写线索状态并保存转换记录。",
+    "evidenceIds": ["evidence:e4f34abb801a53c4", "evidence:943d5baff5213990", "evidence:8a684ea3f657dd98", "evidence:08a9491dceec9cd6"],
+    "confidence": "verified"
+  },
+  "roles": [],
+  "scenarios": [
+    {
+      "text": "线索状态必须为 pending 或 following。",
+      "evidenceIds": ["evidence:e4f34abb801a53c4"],
+      "confidence": "verified"
+    },
+    {
+      "text": "必须先关联已有客户或创建客户；创建项目是可选步骤。",
+      "evidenceIds": ["evidence:11aaac1e227c2544", "evidence:d36967921537fbf3"],
+      "confidence": "verified"
+    }
+  ],
+  "steps": [
+    {
+      "id": "document:3630d309ee5f90cf:step:1",
+      "title": "处理客户",
+      "instruction": {
+        "text": "在线索转化向导中关联已有客户或创建客户。系统必须取得客户 ID，否则立即停止并提示重新选择客户。",
+        "evidenceIds": ["evidence:54acebb6c62e9c6b", "evidence:181e3142bc3b832f", "evidence:11aaac1e227c2544"],
+        "confidence": "verified"
+      },
+      "screenshots": []
+    },
+    {
+      "id": "document:3630d309ee5f90cf:step:2",
+      "title": "选择是否创建项目",
+      "instruction": {
+        "text": "如需创建项目，进入项目步骤填写并提交；如不需要，选择跳过项目，仅转客户。",
+        "evidenceIds": ["evidence:d36967921537fbf3", "evidence:10c5f5e7d8228d40"],
+        "confidence": "verified"
+      },
+      "screenshots": []
+    },
+    {
+      "id": "document:3630d309ee5f90cf:step:3",
+      "title": "完成线索转化",
+      "instruction": {
+        "text": "系统将线索状态更新为 converted，再写入包含线索、客户和可选项目标识的转换记录。只有转换记录返回 200 或 S00000 后才提示转换成功并关闭向导。",
+        "evidenceIds": ["evidence:943d5baff5213990", "evidence:8a684ea3f657dd98", "evidence:08a9491dceec9cd6", "evidence:b9850a27f25b9c07"],
+        "confidence": "verified"
+      },
+      "screenshots": []
+    }
+  ],
+  "fields": [],
+  "outcomes": [
+    {
+      "text": "线索状态更新为 converted，并新增一条关联线索、客户及可选项目的转换记录。",
+      "evidenceIds": ["evidence:943d5baff5213990", "evidence:08a9491dceec9cd6"],
+      "confidence": "verified"
+    }
+  ],
+  "notices": [
+    {
+      "text": "关联已有客户时，lookupLead 更新失败不会阻断主转换流程。",
+      "evidenceIds": ["evidence:54acebb6c62e9c6b", "evidence:181e3142bc3b832f"],
+      "confidence": "verified"
+    },
+    {
+      "text": "项目创建失败时客户可能已处理完成，页面停留在项目步骤，可稍后手工补建项目。",
+      "evidenceIds": ["evidence:10c5f5e7d8228d40", "evidence:80d4c8562fd3e138"],
+      "confidence": "verified"
+    },
+    {
+      "text": "线索状态或转换记录更新失败时不显示转换成功，需要重试。",
+      "evidenceIds": ["evidence:8a684ea3f657dd98", "evidence:b9850a27f25b9c07", "evidence:80d4c8562fd3e138"],
+      "confidence": "verified"
+    }
+  ],
+  "faqs": [],
+  "relatedFeatureIds": [],
+  "reviewItems": [
+    {
+      "id": "document:3630d309ee5f90cf:review:screenshot:8",
+      "sectionId": "document:3630d309ee5f90cf:step:1",
+      "message": "当前试发布不含真实页面截图，正式验收前需要补充并检查敏感信息。",
+      "severity": "warning"
+    },
+    {
+      "id": "document:3630d309ee5f90cf:review:business-fields:8",
+      "sectionId": "fields",
+      "message": "业务角色、菜单入口和表单必填字段尚未由 CRM 业务人员确认。",
+      "severity": "warning"
+    }
+  ],
+  "revision": 8
+}

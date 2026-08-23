@@ -3,6 +3,18 @@ import { FeishuHttpClient, FeishuPublisher, FeishuSdkClient, type FeishuSdkLike,
 import { PublishError } from '@bizdoc/publisher';
 
 describe('Feishu blocks', () => {
+  it('silences the official SDK logger so request metadata cannot reach console logs', () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      new FeishuSdkClient({ appId: 'test', appSecret: 'test' });
+      expect(log).not.toHaveBeenCalled();
+      expect(error).not.toHaveBeenCalled();
+    } finally {
+      log.mockRestore(); error.mockRestore();
+    }
+  });
+
   it('converts the platform-neutral model without Markdown parsing', () => {
     const blocks = toFeishuBlocks({ id: 'document:1', featureId: 'feature:1', title: '创建商机', summary: { text: '简介', evidenceIds: ['e'], confidence: 'verified' }, roles: [], scenarios: [], steps: [{ id: 's', title: '提交', instruction: { text: '点击提交', evidenceIds: ['e'], confidence: 'verified' }, screenshots: [{ assetId: 'asset:1', alt: '提交页' }] }], fields: [{ name: 'name', required: true, description: { text: '商机名称', evidenceIds: ['e'], confidence: 'verified' } }], outcomes: [], notices: [], faqs: [], relatedFeatureIds: [], reviewItems: [], revision: 1 }, { 'asset:1': 'image-token' });
     expect(blocks[0]?.heading1?.elements[0]?.text_run.content).toBe('创建商机');
@@ -27,13 +39,26 @@ describe('Feishu blocks', () => {
     const client = new FakeClient({ appId: 'test', appSecret: 'test' }, 'http://unused');
     const publisher = new FeishuPublisher(client, { id: 'target', spaceId: 'space' });
     const result = await publisher.publish({
-      targetId: 'target', existing: { nodeToken: 'node', documentToken: 'doc' }, assets: { 'asset:1': { id: 'asset:1', path: '/tmp/image.png', mimeType: 'image/png' } },
+      targetId: 'target', existing: { nodeToken: 'node', documentToken: 'doc' }, assets: { 'asset:1': { id: 'asset:1', path: process.execPath, mimeType: 'image/png' } },
       document: { id: 'document:1', featureId: 'feature:1', title: '创建商机', roles: [], scenarios: [], steps: [{ id: 's', title: '提交', instruction: { text: '点击提交', evidenceIds: ['e'], confidence: 'verified' }, screenshots: [{ assetId: 'asset:1', alt: '提交页' }] }], fields: [], outcomes: [], notices: [], faqs: [], relatedFeatureIds: [], reviewItems: [], revision: 2 }
     });
     expect(result.created).toBe(false);
     expect(client.calls.map((call) => call.method)).toEqual(['GET', 'GET', 'DELETE', 'POST']);
     expect(client.calls[2]?.body).toEqual({ start_index: 0, end_index: 2 });
     expect(JSON.stringify(client.calls[3]?.body)).toContain('uploaded-image');
+  });
+
+  it('rejects missing screenshot assets before modifying the remote document', async () => {
+    const client = { request: vi.fn(), uploadImage: vi.fn() };
+    const publisher = new FeishuPublisher(client, { id: 'target', spaceId: 'space' });
+    const document = {
+      id: 'document:missing-image', featureId: 'feature:1', title: 'Document', roles: [], scenarios: [],
+      steps: [{ id: 'step:1', title: 'Step', instruction: { text: 'Do it', evidenceIds: [], confidence: 'inferred' as const }, screenshots: [{ assetId: 'asset:missing', alt: 'Missing' }] }],
+      fields: [], outcomes: [], notices: [], faqs: [], relatedFeatureIds: [], reviewItems: [], revision: 1
+    };
+    await expect(publisher.publish({ document, targetId: 'target', existing: { nodeToken: 'node', documentToken: 'doc' } }))
+      .rejects.toMatchObject({ category: 'CONTENT', retryable: false });
+    expect(client.request).not.toHaveBeenCalled();
   });
 
   it('retries 429 responses with a bound delay and exposes a categorized final error', async () => {
@@ -77,5 +102,15 @@ describe('Feishu blocks', () => {
     const client = new FeishuSdkClient({ appId: 'test', appSecret: 'test' }, sdk);
     await expect(client.request('POST', '/docx/v1/documents/doc/blocks/doc/descendant', {}))
       .rejects.toThrow('1770001: invalid block');
+  });
+
+  it('does not expose raw SDK request metadata from image upload errors', async () => {
+    const unsafe = Object.assign(new Error('Authorization: Bearer fixture-upload-token'), { response: { status: 403, data: { code: 99991663, msg: 'forbidden' } } });
+    const sdk = { request: vi.fn(), drive: { media: { uploadAll: vi.fn().mockRejectedValue(unsafe) } } } as unknown as FeishuSdkLike;
+    const client = new FeishuSdkClient({ appId: 'test', appSecret: 'test' }, sdk);
+    const promise = client.uploadImage('document', process.execPath);
+    await expect(promise).rejects.toThrow('99991663: forbidden');
+    await expect(promise).rejects.not.toThrow('fixture-upload-token');
+    expect(sdk.drive.media.uploadAll).toHaveBeenCalledTimes(1);
   });
 });

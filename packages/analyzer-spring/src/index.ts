@@ -3,7 +3,7 @@ import path from 'node:path';
 import Parser from 'tree-sitter';
 import Java from 'tree-sitter-java';
 import type { SourceInventory } from '@bizdoc/project-scanner';
-import { codeFactSchema, normalizeHttpPath, stableId, type CodeFact, type Evidence } from '@bizdoc/business-model';
+import { codeFactSchema, normalizeHttpPath, sanitizeCodeFacts, stableId, type CodeFact, type Evidence } from '@bizdoc/business-model';
 
 function lineAt(source: string, index: number): number { return source.slice(0, index).split('\n').length; }
 function evFor(source: SourceInventory, file: string, text: string, index: number, symbol?: string): Evidence {
@@ -14,6 +14,36 @@ function evFor(source: SourceInventory, file: string, text: string, index: numbe
 }
 function annotationPath(text: string): string {
   return text.match(/\(\s*(?:value\s*=\s*)?["']([^"']+)["']/)?.[1] ?? '';
+}
+function methodOwnerAt(text: string, index: number, className: string): string {
+  const methodRegex = /\b(?:public|protected|private)\s+[\w<>, ?[\].]+\s+(\w+)\s*\([^)]*\)\s*\{/g;
+  let owner = className;
+  for (const match of text.matchAll(methodRegex)) {
+    if (match.index === undefined || !match[1] || match.index > index) break;
+    const open = text.indexOf('{', match.index); if (open < 0 || open > index) continue;
+    let depth = 0; let close = text.length;
+    for (let cursor = open; cursor < text.length; cursor += 1) {
+      if (text[cursor] === '{') depth += 1;
+      else if (text[cursor] === '}' && --depth === 0) { close = cursor; break; }
+    }
+    if (index <= close) owner = `${className}.${match[1]}`;
+  }
+  return owner;
+}
+function methodRanges(text: string): Array<{ name: string; open: number; close: number }> {
+  const ranges: Array<{ name: string; open: number; close: number }> = [];
+  const methodRegex = /\b(?:public|protected|private)\s+[\w<>, ?[\].]+\s+(\w+)\s*\([^)]*\)\s*\{/g;
+  for (const match of text.matchAll(methodRegex)) {
+    if (match.index === undefined || !match[1]) continue;
+    const open = text.indexOf('{', match.index); if (open < 0) continue;
+    let depth = 0; let close = text.length;
+    for (let cursor = open; cursor < text.length; cursor += 1) {
+      if (text[cursor] === '{') depth += 1;
+      else if (text[cursor] === '}' && --depth === 0) { close = cursor; break; }
+    }
+    ranges.push({ name: match[1], open, close });
+  }
+  return ranges;
 }
 
 export class SpringAnalyzer {
@@ -58,7 +88,8 @@ export class SpringAnalyzer {
       for (const match of raw.matchAll(permissionRegex)) {
         if (match.index === undefined || !match[1] || !match[2]) continue;
         const ev = evFor(source, file, raw, match.index, className);
-        facts.push(codeFactSchema.parse({ id: stableId('fact', 'permission', className, match[2], ev.id), kind: 'PERMISSION', name: match[1], value: match[2].trim(), owner: className, confidence: hasSyntaxError ? 'inferred' : 'verified', evidence: ev }));
+        const owner = methodOwnerAt(raw, match.index, className);
+        facts.push(codeFactSchema.parse({ id: stableId('fact', 'permission', owner, match[2], ev.id), kind: 'PERMISSION', name: match[1], value: match[2].trim(), owner, confidence: hasSyntaxError ? 'inferred' : 'verified', evidence: ev }));
       }
       const stateChangeRegex = /(?:\.\s*set(Status|State|Stage|Phase|Enabled|Disabled|Active)\s*\(|\b(status|state|stage|phase|enabled|disabled|active)\s*=\s*)([\w."']+)/g;
       for (const match of raw.matchAll(stateChangeRegex)) {
@@ -66,19 +97,22 @@ export class SpringAnalyzer {
         const field = match[1] ? `${match[1][0]?.toLowerCase()}${match[1].slice(1)}` : match[2] ?? 'status';
         const value = match[3]?.replace(/["']/g, ''); if (!value) continue;
         const ev = evFor(source, file, raw, match.index, `${className}.${field}`);
-        facts.push(codeFactSchema.parse({ id: stableId('fact', 'state', className, field, value, ev.id), kind: 'STATE_CHANGE', name: field, value, owner: className, confidence: hasSyntaxError ? 'inferred' : 'verified', evidence: ev }));
+        const owner = methodOwnerAt(raw, match.index, className);
+        facts.push(codeFactSchema.parse({ id: stableId('fact', 'state', owner, field, value, ev.id), kind: 'STATE_CHANGE', name: field, value, owner, confidence: hasSyntaxError ? 'inferred' : 'verified', evidence: ev }));
       }
       const conditionRegex = /\bif\s*\(([^\n)]{1,300})\)/g;
       for (const match of raw.matchAll(conditionRegex)) {
         if (match.index === undefined || !match[1]) continue;
         const ev = evFor(source, file, raw, match.index, className);
-        facts.push(codeFactSchema.parse({ id: stableId('fact', 'condition', className, match[1], ev.id), kind: 'CONDITION', name: 'if', value: match[1].trim(), owner: className, confidence: hasSyntaxError ? 'inferred' : 'verified', evidence: ev }));
+        const owner = methodOwnerAt(raw, match.index, className);
+        facts.push(codeFactSchema.parse({ id: stableId('fact', 'condition', owner, match[1], ev.id), kind: 'CONDITION', name: 'if', value: match[1].trim(), owner, confidence: hasSyntaxError ? 'inferred' : 'verified', evidence: ev }));
       }
       const exceptionRegex = /\bthrow\s+new\s+(\w+)/g;
       for (const match of raw.matchAll(exceptionRegex)) {
         if (match.index === undefined || !match[1]) continue;
         const ev = evFor(source, file, raw, match.index, className);
-        facts.push(codeFactSchema.parse({ id: stableId('fact', 'exception', className, match[1], ev.id), kind: 'EXCEPTION', name: match[1], owner: className, confidence: hasSyntaxError ? 'inferred' : 'verified', evidence: ev }));
+        const owner = methodOwnerAt(raw, match.index, className);
+        facts.push(codeFactSchema.parse({ id: stableId('fact', 'exception', owner, match[1], ev.id), kind: 'EXCEPTION', name: match[1], owner, confidence: hasSyntaxError ? 'inferred' : 'verified', evidence: ev }));
       }
       const validationRegex = /@(NotNull|NotBlank|NotEmpty|Size|Min|Max|Pattern)\b[^\n]*[\r\n]+\s*(?:private|public|protected)\s+[\w<>?,.]+\s+(\w+)/g;
       for (const match of raw.matchAll(validationRegex)) {
@@ -91,9 +125,31 @@ export class SpringAnalyzer {
         if (match.index === undefined || !match[1] || !match[2]) continue;
         const ev = evFor(source, file, raw, match.index, className);
         const kind = /(Mapper|Repository)$/.test(match[1]) ? 'DATA_ACCESS' : 'SERVICE_CALL';
-        facts.push(codeFactSchema.parse({ id: stableId('fact', kind, className, match[1], match[2], ev.id), kind, name: `${match[1]}.${match[2]}`, owner: className, target: match[1], confidence: 'verified', evidence: ev }));
+        const owner = methodOwnerAt(raw, match.index, className);
+        facts.push(codeFactSchema.parse({ id: stableId('fact', kind, owner, match[1], match[2], ev.id), kind, name: `${match[1]}.${match[2]}`, owner, target: match[1], confidence: 'verified', evidence: ev }));
+      }
+      const ranges = methodRanges(raw); const declaredMethods = new Set(ranges.map((range) => range.name));
+      const localCalls: Array<{ caller: string; called: string; index: number }> = [];
+      for (const range of ranges) {
+        const body = raw.slice(range.open + 1, range.close);
+        const localCallRegex = /(?<![.\w])(\w+)\s*\(/g;
+        for (const match of body.matchAll(localCallRegex)) {
+          if (match.index === undefined || !match[1] || match[1] === range.name || !declaredMethods.has(match[1])) continue;
+          localCalls.push({ caller: range.name, called: match[1], index: range.open + 1 + match.index });
+        }
+      }
+      const reachesData = new Set(facts.filter((fact) => fact.kind === 'DATA_ACCESS' && fact.owner?.startsWith(`${className}.`))
+        .map((fact) => fact.owner?.slice(className.length + 1) ?? ''));
+      let changed = true;
+      while (changed) {
+        changed = false;
+        for (const call of localCalls) if (reachesData.has(call.called) && !reachesData.has(call.caller)) { reachesData.add(call.caller); changed = true; }
+      }
+      for (const call of localCalls.filter((item) => reachesData.has(item.called))) {
+        const ev = evFor(source, file, raw, call.index, `${className}.${call.caller}`); const owner = `${className}.${call.caller}`;
+        facts.push(codeFactSchema.parse({ id: stableId('fact', 'local-call', owner, call.called, ev.id), kind: 'SERVICE_CALL', name: `${className}.${call.called}`, owner, target: className, confidence: 'verified', evidence: ev }));
       }
     }
-    return facts;
+    return sanitizeCodeFacts(facts);
   }
 }

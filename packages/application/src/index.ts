@@ -8,7 +8,7 @@ import { FrontendAnalyzer } from '@bizdoc/analyzer-frontend';
 import { SpringAnalyzer } from '@bizdoc/analyzer-spring';
 import { FeatureLinker } from '@bizdoc/feature-linker';
 import { Persistence } from '@bizdoc/persistence';
-import { businessSnapshotSchema } from '@bizdoc/business-model';
+import { businessSnapshotSchema, redactSensitiveText, sanitizeCodeFacts } from '@bizdoc/business-model';
 import { createConfiguredComposer, EvidenceTemplateComposer } from '@bizdoc/ai-composer';
 import { documentId, documentationModelSchema, type DocumentationModel } from '@bizdoc/document-model';
 import { MarkdownRenderer } from '@bizdoc/markdown-renderer';
@@ -71,7 +71,7 @@ export class AnalyzeProjectUseCase {
     const springAnalyzer = new SpringAnalyzer();
     const [frontendFacts, backendFacts] = await Promise.all([new FrontendAnalyzer().analyze(frontendSource), springAnalyzer.analyze(backendSource)]);
     const runId = newRunId();
-    const facts = [...new Map([...frontendFacts, ...backendFacts].map((fact) => [fact.id, fact])).values()];
+    const facts = sanitizeCodeFacts([...new Map([...frontendFacts, ...backendFacts].map((fact) => [fact.id, fact])).values()]);
     const linked = new FeatureLinker().link({ runId, facts, commits: { frontend: frontendSource.commit, backend: backendSource.commit }, mappings: config.analysis.mappings });
     const snapshot = businessSnapshotSchema.parse({ ...linked, diagnostics: { parseFailures: springAnalyzer.failures } });
     const metrics = { files: frontendSource.files.length + backendSource.files.length, facts: facts.length, features: snapshot.features.length,
@@ -135,13 +135,16 @@ export class PublishDocumentUseCase {
     const persistence = new Persistence(path.resolve(rootInput)); persistence.migrate(); const current = persistence.getDocument(documentIdValue);
     if (current.status !== 'approved') { persistence.close(); throw new Error(`REVIEW_REQUIRED: ${documentIdValue} revision ${current.revision} is ${current.status}`); }
     const document = documentationModelSchema.parse(current.model); const existing = persistence.publicationMapping(document.id, targetId);
+    if (persistence.unresolvedBlockingReviewItems(document.id, document.revision).length > 0) {
+      persistence.close(); throw new Error(`REVIEW_REQUIRED: ${documentIdValue} revision ${current.revision} has blocking review items`);
+    }
     const startedAt = new Date().toISOString();
     try {
       const result = await publisher.publish({ document, targetId, assets: persistence.assets(), ...(existing ? { existing } : {}) });
       persistence.savePublication({ id: `publication:${randomUUID()}`, documentId: document.id, revision: document.revision, targetId, nodeToken: result.nodeToken, documentToken: result.documentToken, status: 'completed', result, startedAt, finishedAt: new Date().toISOString() });
       persistence.close(); return result;
     } catch (error) {
-      persistence.savePublication({ id: `publication:${randomUUID()}`, documentId: document.id, revision: document.revision, targetId, status: 'failed', ...(error instanceof PublishError ? { errorCategory: error.category, ...(error.nodeToken ? { nodeToken: error.nodeToken } : {}), ...(error.documentToken ? { documentToken: error.documentToken } : {}) } : {}), result: { message: error instanceof Error ? error.message : String(error) }, startedAt, finishedAt: new Date().toISOString() });
+      persistence.savePublication({ id: `publication:${randomUUID()}`, documentId: document.id, revision: document.revision, targetId, status: 'failed', ...(error instanceof PublishError ? { errorCategory: error.category, ...(error.nodeToken ? { nodeToken: error.nodeToken } : {}), ...(error.documentToken ? { documentToken: error.documentToken } : {}) } : {}), result: { message: redactSensitiveText(error instanceof Error ? error.message : String(error)) }, startedAt, finishedAt: new Date().toISOString() });
       persistence.close(); throw error;
     }
   }

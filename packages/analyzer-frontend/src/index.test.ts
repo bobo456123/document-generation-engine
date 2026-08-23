@@ -32,4 +32,17 @@ describe('FrontendAnalyzer', () => {
       expect(fact.evidence.startLine).toBeGreaterThan(0);
     }
   });
+
+  it('redacts sensitive constants from facts and evidence excerpts', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'bizdoc-frontend-secret-'));
+    try {
+      const file = path.join(root, 'Config.ts'); const secret = 'fixture-frontend-secret-123456';
+      await writeFile(file, `export const APP_SECRET = '${secret}';\nfetch('/api/config');\n`);
+      const facts = await new FrontendAnalyzer().analyze({ name: 'frontend', root, framework: 'react', files: [file], commit: null });
+      expect(JSON.stringify(facts)).not.toContain(secret);
+      expect(JSON.stringify(facts)).toContain('[REDACTED]');
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
 });
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';

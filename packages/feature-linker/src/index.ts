@@ -5,6 +5,43 @@ export interface ExplicitMapping { frontend: { method: string; path: string }; b
 export interface LinkInput { runId: string; facts: CodeFact[]; commits: Record<string, string | null>; mappings?: ExplicitMapping[] }
 
 function unique<T>(values: T[]): T[] { return [...new Set(values)]; }
+function componentStem(value: string): string {
+  return value.replace(/(?:ServiceImpl|Service|Mapper|Repository)$/i, '').replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
+}
+function relatedBackendFacts(endpoint: CodeFact, facts: CodeFact[]): CodeFact[] {
+  const repositoryFacts = facts.filter((fact) => fact.evidence.repository === endpoint.evidence.repository);
+  const endpointExcerpt = endpoint.evidence.excerpt ?? '';
+  const endpointLine = endpoint.evidence.startLine ?? 0;
+  const nextEndpointLine = repositoryFacts.filter((fact) => fact.kind === 'HTTP_ENDPOINT' && fact.evidence.file === endpoint.evidence.file
+    && (fact.evidence.startLine ?? 0) > endpointLine).map((fact) => fact.evidence.startLine ?? Number.MAX_SAFE_INTEGER).sort((a, b) => a - b)[0] ?? Number.MAX_SAFE_INTEGER;
+  const direct = repositoryFacts.filter((fact) => (fact.evidence.file === endpoint.evidence.file && (fact.evidence.startLine ?? 0) >= endpointLine
+      && (fact.evidence.startLine ?? 0) < nextEndpointLine)
+    || (fact.kind === 'VALIDATION' && fact.owner !== undefined && endpointExcerpt.includes(fact.owner)));
+  const pending = direct.filter((fact) => fact.kind === 'SERVICE_CALL' && fact.target).map((call) => ({ call, localDepth: 0 }));
+  const serviceFacts: CodeFact[] = []; const visitedOwners = new Set<string>();
+  while (pending.length) {
+    const queued = pending.shift(); const call = queued?.call; if (!call?.target || queued === undefined) continue;
+    const method = call.name.split('.').at(-1); if (!method) continue;
+    const matchingOwners = repositoryFacts.flatMap((fact) => {
+      if (!fact.owner?.includes('.')) return [];
+      const separator = fact.owner.lastIndexOf('.'); const ownerClass = fact.owner.slice(0, separator); const ownerMethod = fact.owner.slice(separator + 1);
+      return componentStem(call.target ?? '') === componentStem(ownerClass) && method === ownerMethod ? [fact.owner] : [];
+    });
+    for (const owner of matchingOwners) {
+      if (visitedOwners.has(owner)) continue; visitedOwners.add(owner);
+      const owned = repositoryFacts.filter((fact) => fact.owner === owner); serviceFacts.push(...owned);
+      pending.push(...owned.filter((fact) => fact.kind === 'SERVICE_CALL' && fact.target).flatMap((next) => {
+        const local = componentStem(next.target ?? '') === componentStem(owner.slice(0, owner.lastIndexOf('.')));
+        const localDepth = queued.localDepth + (local ? 1 : 0);
+        return localDepth <= 1 ? [{ call: next, localDepth }] : [];
+      }));
+    }
+  }
+  const dataTargets = new Set([...direct, ...serviceFacts]
+    .filter((fact) => fact.kind === 'DATA_ACCESS' && fact.target).map((fact) => componentStem(fact.target ?? '')));
+  const entities = repositoryFacts.filter((fact) => fact.kind === 'ENTITY' && dataTargets.has(componentStem(fact.name)));
+  return [...new Map([...direct, ...serviceFacts, ...entities].map((fact) => [fact.id, fact])).values()];
+}
 function mergeContextFeatures(features: BusinessFeature[]): BusinessFeature[] {
   const merged = new Map<string, BusinessFeature>();
   for (const feature of features) {
@@ -50,8 +87,7 @@ export class FeatureLinker {
       }
       usedFrontend.add(api.id); usedBackend.add(endpoint.id);
       const frontendInvocations = input.facts.filter((fact) => fact.kind === 'SERVICE_CALL' && fact.target === api.owner && fact.evidence.repository === api.evidence.repository);
-      const endpointExcerpt = endpoint.evidence.excerpt ?? '';
-      const relatedBackend = input.facts.filter((fact) => fact.evidence.file === endpoint.evidence.file || fact.owner === endpoint.owner || (fact.kind === 'VALIDATION' && fact.owner !== undefined && endpointExcerpt.includes(fact.owner)));
+      const relatedBackend = relatedBackendFacts(endpoint, input.facts);
       const backendFields = relatedBackend.filter((fact) => fact.kind === 'VALIDATION');
       const contextFiles = [...new Set(frontendInvocations.map((fact) => fact.evidence.file).filter((file) => file !== api.evidence.file))];
       if (!contextFiles.length) contextFiles.push(api.evidence.file);

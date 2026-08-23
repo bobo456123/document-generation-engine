@@ -1,6 +1,6 @@
 import type { DocumentationModel } from '@bizdoc/document-model';
 import { PublishError, type PublishInput, type Publisher, type PublishResult } from '@bizdoc/publisher';
-import { readFile } from 'node:fs/promises';
+import { access, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import * as lark from '@larksuiteoapi/node-sdk';
 
@@ -9,6 +9,14 @@ export interface FeishuTarget { id: string; spaceId: string; parentNodeToken?: s
 export interface FeishuApiClient { request<T>(method: string, route: string, body?: unknown): Promise<T>; uploadImage(documentToken: string, filePath: string, mimeType?: string): Promise<string> }
 export interface FeishuBlock { block_type: number; text?: { elements: Array<{ text_run: { content: string } }> }; heading1?: { elements: Array<{ text_run: { content: string } }> }; heading2?: { elements: Array<{ text_run: { content: string } }> }; bullet?: { elements: Array<{ text_run: { content: string } }> }; ordered?: { elements: Array<{ text_run: { content: string } }> }; image?: { token: string }; table?: { property: { row_size: number; column_size: number; column_width?: number[]; header_row?: boolean } }; tableRows?: string[][] }
 export interface FeishuDescendant extends Omit<FeishuBlock, 'tableRows'> { block_id: string; children?: string[] }
+
+const silentSdkLogger = {
+  error: (): void => undefined,
+  warn: (): void => undefined,
+  info: (): void => undefined,
+  debug: (): void => undefined,
+  trace: (): void => undefined
+};
 
 export function toFeishuBlocks(document: DocumentationModel, imageTokens: Record<string, string> = {}): FeishuBlock[] {
   const text = (content: string): Array<{ text_run: { content: string } }> => [{ text_run: { content } }];
@@ -149,7 +157,10 @@ function sdkErrorDetail(error: unknown): string {
 export class FeishuSdkClient implements FeishuApiClient {
   private readonly sdk: FeishuSdkLike;
   constructor(credentials: FeishuCredentials, sdk?: FeishuSdkLike, private readonly wait: (milliseconds: number) => Promise<void> = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds))) {
-    this.sdk = sdk ?? new lark.Client({ appId: credentials.appId, appSecret: credentials.appSecret, appType: lark.AppType.SelfBuild, domain: lark.Domain.Feishu }) as unknown as FeishuSdkLike;
+    this.sdk = sdk ?? new lark.Client({
+      appId: credentials.appId, appSecret: credentials.appSecret, appType: lark.AppType.SelfBuild,
+      domain: lark.Domain.Feishu, logger: silentSdkLogger
+    }) as unknown as FeishuSdkLike;
   }
 
   async request<T>(method: string, route: string, body?: unknown): Promise<T> {
@@ -182,7 +193,7 @@ export class FeishuSdkClient implements FeishuApiClient {
       } catch (error) {
         const status = sdkErrorStatus(error); const retryable = status === 429 || status === undefined || status >= 500;
         const category = status === 401 || status === 403 ? 'AUTHORIZATION' : status === 429 ? 'RATE_LIMIT' : status === undefined ? 'NETWORK' : status >= 500 ? 'REMOTE_API' : 'CONTENT';
-        lastError = new PublishError(`Feishu SDK image upload failed${status ? ` (${status})` : ''}: ${error instanceof Error ? error.message : String(error)}`, category, retryable, status);
+        lastError = new PublishError(`Feishu SDK image upload failed${status ? ` (${status})` : ''}: ${sdkErrorDetail(error)}`, category, retryable, status);
         if (!retryable) break;
         if (attempt < 2) await this.wait(250 * 2 ** attempt);
       }
@@ -194,6 +205,13 @@ export class FeishuSdkClient implements FeishuApiClient {
 export class FeishuPublisher implements Publisher {
   constructor(private readonly client: FeishuApiClient, private readonly target: FeishuTarget) {}
   async publish(input: PublishInput): Promise<PublishResult> {
+    const screenshotAssets = input.document.steps.flatMap((step) => step.screenshots.map((screenshot) => {
+      const asset = input.assets?.[screenshot.assetId];
+      if (!asset) throw new PublishError(`Screenshot asset is missing: ${screenshot.assetId}`, 'CONTENT', false);
+      return { screenshot, asset };
+    }));
+    try { await Promise.all(screenshotAssets.map(({ asset }) => access(asset.path))); }
+    catch { throw new PublishError('One or more screenshot files are unavailable', 'CONTENT', false); }
     await this.client.request('GET', `/wiki/v2/spaces/${this.target.spaceId}`);
     if (this.target.parentNodeToken) await this.client.request('GET', `/wiki/v2/spaces/get_node?token=${encodeURIComponent(this.target.parentNodeToken)}`);
     let documentToken = input.existing?.documentToken;
@@ -211,9 +229,7 @@ export class FeishuPublisher implements Publisher {
         if (count > 0) await this.client.request('DELETE', `/docx/v1/documents/${documentToken}/blocks/${documentToken}/children/batch_delete`, { start_index: 0, end_index: count });
       }
       const imageTokens: Record<string, string> = {};
-      for (const step of input.document.steps) for (const screenshot of step.screenshots) {
-        const asset = input.assets?.[screenshot.assetId];
-        if (!asset) throw new PublishError(`Screenshot asset is missing: ${screenshot.assetId}`, 'CONTENT', false);
+      for (const { screenshot, asset } of screenshotAssets) {
         imageTokens[screenshot.assetId] = await this.client.uploadImage(documentToken, asset.path, asset.mimeType);
       }
       const blocks = toFeishuBlocks(input.document, imageTokens);

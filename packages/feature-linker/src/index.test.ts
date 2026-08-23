@@ -23,8 +23,11 @@ describe('analysis contract', () => {
     expect(snapshot.features[0]?.evidenceIds.length).toBeGreaterThanOrEqual(2);
     expect(snapshot.features[0]?.entry?.action).toBe('创建商机');
     expect(snapshot.features[0]?.fields).toEqual(expect.arrayContaining([expect.objectContaining({ name: 'name', required: true })]));
+    expect(snapshot.features[0]?.entities).toContain('Opportunity');
     expect(snapshot.facts.some((fact) => fact.kind === 'ACTION' && fact.name === '创建商机')).toBe(true);
     expect(snapshot.facts.some((fact) => fact.kind === 'VALIDATION' && fact.name === 'name')).toBe(true);
+    expect(snapshot.features[0]?.backendRefs.map((id) => snapshot.facts.find((fact) => fact.id === id)?.kind))
+      .toEqual(expect.arrayContaining(['SERVICE_CALL', 'DATA_ACCESS', 'ENTITY', 'STATE_CHANGE']));
   });
 
   it('does not match the same path with a different method', () => {
@@ -57,6 +60,28 @@ describe('analysis contract', () => {
     ] });
     expect(snapshot.features[0]?.confidence).toBe('inferred');
     expect(snapshot.facts.find((fact) => fact.kind === 'MAPPING')?.evidence.source).toBe('MANUAL_INPUT');
+  });
+
+  it('does not pull unrelated service methods and entities into an endpoint', () => {
+    const ev = (id: string, file: string, line: number) => ({ id, source: 'SOURCE_CODE' as const, repository: 'backend', file, startLine: line });
+    const facts = [
+      { id: 'front', kind: 'API_CALL' as const, name: 'save', method: 'POST', path: '/save', confidence: 'verified' as const, evidence: { ...ev('e1', 'api.ts', 1), repository: 'frontend' } },
+      { id: 'endpoint', kind: 'HTTP_ENDPOINT' as const, name: 'LeadController.save', method: 'POST', path: '/save', owner: 'LeadController', confidence: 'verified' as const, evidence: ev('e2', 'LeadController.java', 10) },
+      { id: 'controller-call', kind: 'SERVICE_CALL' as const, name: 'leadService.save', owner: 'LeadController.save', target: 'leadService', confidence: 'verified' as const, evidence: ev('e3', 'LeadController.java', 12) },
+      { id: 'next-endpoint', kind: 'HTTP_ENDPOINT' as const, name: 'LeadController.delete', method: 'POST', path: '/delete', owner: 'LeadController', confidence: 'verified' as const, evidence: ev('e4', 'LeadController.java', 20) },
+      { id: 'unrelated-controller-call', kind: 'SERVICE_CALL' as const, name: 'leadService.delete', owner: 'LeadController.delete', target: 'leadService', confidence: 'verified' as const, evidence: ev('e5', 'LeadController.java', 22) },
+      { id: 'local-call', kind: 'SERVICE_CALL' as const, name: 'LeadService.persist', owner: 'LeadService.save', target: 'LeadService', confidence: 'verified' as const, evidence: ev('e6', 'LeadService.java', 10) },
+      { id: 'save-data', kind: 'DATA_ACCESS' as const, name: 'leadMapper.save', owner: 'LeadService.persist', target: 'leadMapper', confidence: 'verified' as const, evidence: ev('e10', 'LeadService.java', 15) },
+      { id: 'delete-data', kind: 'DATA_ACCESS' as const, name: 'auditMapper.delete', owner: 'LeadService.delete', target: 'auditMapper', confidence: 'verified' as const, evidence: ev('e7', 'LeadService.java', 30) },
+      { id: 'lead-entity', kind: 'ENTITY' as const, name: 'Lead', confidence: 'verified' as const, evidence: ev('e8', 'Lead.java', 1) },
+      { id: 'audit-entity', kind: 'ENTITY' as const, name: 'Audit', confidence: 'verified' as const, evidence: ev('e9', 'Audit.java', 1) }
+    ];
+    const snapshot = new FeatureLinker().link({ runId: 'run:test', commits: {}, facts });
+    const save = snapshot.features.find((feature) => feature.apiRefs.some((api) => api.path === '/save'));
+    expect(save?.entities).toEqual(['Lead']);
+    expect(save?.backendRefs).toContain('save-data');
+    expect(save?.backendRefs).not.toContain('delete-data');
+    expect(save?.backendRefs).not.toContain('audit-entity');
   });
 
   it('merges multiple APIs used by the same page context', () => {

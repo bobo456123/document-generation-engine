@@ -12,6 +12,7 @@ import { AnalyzeProjectUseCase, AttachScreenshotUseCase, GenerateDocumentUseCase
 import { startLocalPreview } from '@bizdoc/markdown-renderer';
 import { loadProjectConfig } from '@bizdoc/config';
 import { FeishuPublisher, FeishuSdkClient } from '@bizdoc/publisher-feishu';
+import { documentId as documentIdForFeature } from '@bizdoc/document-model';
 
 async function exists(file: string): Promise<boolean> {
   try { await access(file); return true; } catch { return false; }
@@ -76,14 +77,21 @@ async function main(): Promise<void> {
   program.command('review-approve').argument('<document-id>').argument('<revision>').option('--directory <path>', 'configured workspace', '.').action((documentId: string, revision: string, options: { directory: string }) => {
     approveDocument(app, options.directory, documentId, Number(revision));
   });
-  program.command('screenshot').description('manage screenshots').command('add').argument('<file>').requiredOption('--document <id>').requiredOption('--section <id>').option('--alt <text>', 'image alt text', '页面截图').option('--directory <path>', 'configured workspace', '.').action(async (file: string, options: { document: string; section: string; alt: string; directory: string }) => {
-    await addScreenshot(app, options.directory, options.document, options.section, file, options.alt);
+  program.command('screenshot').description('manage screenshots').command('add').argument('<file>').option('--document <id>').option('--feature <id>').requiredOption('--section <id>').option('--alt <text>', 'image alt text', '页面截图').option('--directory <path>', 'configured workspace', '.').action(async (file: string, options: { document?: string; feature?: string; section: string; alt: string; directory: string }) => {
+    if (Boolean(options.document) === Boolean(options.feature)) throw new Error('Provide exactly one of --document or --feature');
+    await addScreenshot(app, options.directory, options.document ?? documentIdForFeature(options.feature as string), options.section, file, options.alt);
   });
   program.command('review').description('review document revisions').command('approve').requiredOption('--document <id>').requiredOption('--revision <number>').option('--directory <path>', 'configured workspace', '.').action((options: { document: string; revision: string; directory: string }) => {
     approveDocument(app, options.directory, options.document, Number(options.revision));
   });
-  program.command('preview').argument('<markdown-file>').option('--port <number>', 'local port', '4173').action(async (markdownFile: string, options: { port: string }) => {
-    const preview = await startLocalPreview(path.resolve(markdownFile), Number(options.port)); process.stdout.write(`Preview: ${preview.url}\nPress Ctrl+C to stop.\n`);
+  program.command('preview').argument('[markdown-file]').option('--directory <path>', 'configured workspace', '.').option('--port <number>', 'local port', '4173').action(async (markdownFile: string | undefined, options: { directory: string; port: string }) => {
+    let selected = markdownFile ? path.resolve(markdownFile) : undefined;
+    if (!selected) {
+      const persistence = new Persistence(path.resolve(options.directory)); persistence.migrate(); const latest = persistence.latestDocument(); persistence.close();
+      if (!latest.markdownPath) throw new Error(`Latest document ${latest.id} has no Markdown output`);
+      selected = latest.markdownPath;
+    }
+    const preview = await startLocalPreview(selected, Number(options.port)); process.stdout.write(`Preview: ${preview.url}\nPress Ctrl+C to stop.\n`);
   });
   program.command('publish-feishu').argument('<document-id>').option('--directory <path>', 'configured workspace', '.').action(async (documentId: string, options: { directory: string }) => {
     await publishFeishu(app, options.directory, documentId);

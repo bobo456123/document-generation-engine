@@ -2,16 +2,27 @@ import { generateObject, type LanguageModel } from 'ai';
 import { createOpenAI } from '@ai-sdk/openai';
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
 import { createAnthropic } from '@ai-sdk/anthropic';
-import type { BusinessFeature, CodeFact } from '@bizdoc/business-model';
+import { sanitizeCodeFact, type BusinessFeature, type CodeFact } from '@bizdoc/business-model';
 import { documentId, documentationModelSchema, type DocumentationModel } from '@bizdoc/document-model';
 import type { ProjectConfig } from '@bizdoc/config';
 
 export interface DocumentComposer { compose(feature: BusinessFeature, revision: number, evidenceFacts?: CodeFact[]): Promise<DocumentationModel> }
 
+const AI_COMPOSE_ATTEMPTS = 3;
+
+export async function retryStructuredComposition<T>(operation: () => Promise<T>, attempts = AI_COMPOSE_ATTEMPTS): Promise<T> {
+  if (!Number.isInteger(attempts) || attempts < 1) throw new Error('AI composition attempts must be a positive integer');
+  let lastError: unknown;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try { return await operation(); } catch (error) { lastError = error; }
+  }
+  throw lastError;
+}
+
 export function composerPromptInput(feature: BusinessFeature, revision: number, evidenceFacts: CodeFact[] = []): unknown {
   return {
     feature,
-    evidenceFacts: evidenceFacts.map((fact) => ({
+    evidenceFacts: evidenceFacts.map(sanitizeCodeFact).map((fact) => ({
       ...fact,
       evidence: {
         id: fact.evidence.id,
@@ -38,14 +49,42 @@ export function requireAiReview(document: DocumentationModel): DocumentationMode
   });
 }
 
-export function validateComposedDocument(feature: BusinessFeature, revision: number, candidate: unknown): DocumentationModel {
+export function validateComposedDocument(feature: BusinessFeature, revision: number, candidate: unknown, evidenceFacts: CodeFact[] = []): DocumentationModel {
   const parsed = documentationModelSchema.parse(candidate);
-  const allowed = new Set(feature.evidenceIds);
+  const allowed = new Set([...feature.evidenceIds, ...evidenceFacts.map((fact) => fact.evidence.id)]);
   const references = JSON.stringify(parsed).match(/evidence:[a-f0-9]+/g) ?? [];
   const invalid = references.filter((id) => !allowed.has(id));
   if (invalid.length) throw new Error(`Model returned unknown evidence IDs: ${[...new Set(invalid)].join(', ')}`);
   if (parsed.id !== documentId(feature.id) || parsed.featureId !== feature.id || parsed.revision !== revision) throw new Error('Model changed immutable document identity or revision fields');
+  const inferenceEvidence = new Set(evidenceFacts.filter((fact) => fact.evidence.source === 'AI_INFERENCE').map((fact) => fact.evidence.id));
+  const contents = [
+    ...(parsed.summary ? [parsed.summary] : []), ...parsed.roles, ...parsed.scenarios,
+    ...parsed.steps.map((step) => step.instruction), ...parsed.fields.map((field) => field.description),
+    ...parsed.outcomes, ...parsed.notices, ...parsed.faqs.map((faq) => faq.answer)
+  ];
+  if (contents.some((content) => content.confidence === 'verified' && content.evidenceIds.some((id) => inferenceEvidence.has(id)))) {
+    throw new Error('Model promoted AI_INFERENCE evidence to verified content');
+  }
   return parsed;
+}
+
+export async function repairStructuredDocumentText({ text }: { text: string; error: unknown }): Promise<string | null> {
+  let candidate: unknown;
+  try { candidate = JSON.parse(text); } catch { return null; }
+  if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return null;
+
+  const repaired = { ...candidate } as Record<string, unknown>;
+  for (const key of ['roles', 'scenarios', 'fields', 'outcomes', 'notices', 'faqs', 'relatedFeatureIds', 'reviewItems']) {
+    if (repaired[key] === undefined) repaired[key] = [];
+  }
+  if (Array.isArray(repaired.steps)) {
+    repaired.steps = repaired.steps.map((step, index) => {
+      if (!step || typeof step !== 'object' || Array.isArray(step)) return step;
+      const value = step as Record<string, unknown>;
+      return value.title === undefined ? { ...value, title: `步骤 ${index + 1}` } : value;
+    });
+  }
+  return JSON.stringify(repaired);
 }
 
 export class EvidenceTemplateComposer implements DocumentComposer {
@@ -68,12 +107,15 @@ export class EvidenceTemplateComposer implements DocumentComposer {
 export class AiDocumentComposer implements DocumentComposer {
   constructor(private readonly model: LanguageModel) {}
   async compose(feature: BusinessFeature, revision: number, evidenceFacts: CodeFact[] = []): Promise<DocumentationModel> {
-    const { object } = await generateObject({
-      model: this.model, schema: documentationModelSchema, maxRetries: 2,
-      system: '你是业务操作文档编写器。只能使用输入事实。内容务必简洁。无法证明的内容留空或加入 reviewItems，禁止虚构角色、条件、金额、权限或结果。',
-      prompt: JSON.stringify(composerPromptInput(feature, revision, evidenceFacts))
+    return retryStructuredComposition(async () => {
+      const { object } = await generateObject({
+        model: this.model, schema: documentationModelSchema, maxRetries: 2,
+        repairText: repairStructuredDocumentText,
+        system: '你是业务操作文档编写器。只能使用输入事实。内容务必简洁。无法证明的内容留空或加入 reviewItems，禁止虚构角色、条件、金额、权限或结果。所有 Schema 必填字段必须返回；没有内容的数组返回空数组；不可变 ID 和 revision 必须原样复制输入。',
+        prompt: JSON.stringify(composerPromptInput(feature, revision, evidenceFacts))
+      });
+      return requireAiReview(validateComposedDocument(feature, revision, object, evidenceFacts));
     });
-    return requireAiReview(validateComposedDocument(feature, revision, object));
   }
 }
 

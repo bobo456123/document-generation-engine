@@ -31,6 +31,77 @@ export const codeFactSchema = z.object({
 });
 export type CodeFact = z.infer<typeof codeFactSchema>;
 
+export const REDACTED_VALUE = '[REDACTED]';
+
+const SENSITIVE_IDENTIFIER = /(?:^|[^a-z0-9])(?:authorization|credential|password|passwd|pwd|token|secret|api[_-]?key|app[_-]?(?:id|key|secret)|client[_-]?(?:id|key|secret)|access[_-]?key)(?:$|[^a-z0-9])/i;
+
+function normalizedIdentifier(value: string): string {
+  return value.replace(/([a-z0-9])([A-Z])/g, '$1_$2').replace(/[^a-zA-Z0-9]+/g, '_').toLowerCase();
+}
+
+export function isSensitiveIdentifier(value: string | undefined): boolean {
+  return value !== undefined && SENSITIVE_IDENTIFIER.test(`_${normalizedIdentifier(value)}_`);
+}
+
+export function redactSensitiveText(input: string): string {
+  const key = String.raw`(?:authorization|credential|password|passwd|pwd|token|secret|api[_-]?key|app[_-]?(?:id|key|secret)|client[_-]?(?:id|key|secret)|access[_-]?key)`;
+  return input
+    .replace(/(\bauthorization\b\s*[:=]\s*)["']?bearer\s+[^\s"',;)}]+/gi, `$1${REDACTED_VALUE}`)
+    .replace(new RegExp(`(\\b(?:set)?${key}\\s*\\(\\s*)([\\"'\\x60])([^\\"'\\x60\\r\\n]+)\\2`, 'gi'), `$1$2${REDACTED_VALUE}$2`)
+    .replace(new RegExp(`(\\b${key}\\b\\s*(?:=|:)\\s*)([\\"'\\x60])([^\\"'\\x60\\r\\n]+)\\2`, 'gi'), `$1$2${REDACTED_VALUE}$2`)
+    .replace(new RegExp(`(\\b${key}\\b\\s*(?:=|:)\\s*)(?![\\"'\\x60])([^\\s,;&)}]+)`, 'gi'), `$1${REDACTED_VALUE}`)
+    .replace(/([?&](?:app_?id|app_?secret|access_?token|token|api_?key)=)[^&\s]+/gi, `$1${REDACTED_VALUE}`);
+}
+
+export function sanitizeCodeFact(fact: CodeFact): CodeFact {
+  const sensitiveValue = [fact.name, fact.owner, fact.target, fact.evidence.symbol].some(isSensitiveIdentifier);
+  const sanitize = (value: string | undefined, force = false): string | undefined => {
+    if (value === undefined) return undefined;
+    return force ? REDACTED_VALUE : redactSensitiveText(value);
+  };
+  return codeFactSchema.parse({
+    ...fact,
+    ...(fact.method === undefined ? {} : { method: sanitize(fact.method) }),
+    ...(fact.path === undefined ? {} : { path: sanitize(fact.path) }),
+    ...(fact.owner === undefined ? {} : { owner: sanitize(fact.owner) }),
+    ...(fact.target === undefined ? {} : { target: sanitize(fact.target) }),
+    ...(fact.value === undefined ? {} : { value: sanitize(fact.value, sensitiveValue) }),
+    evidence: {
+      ...fact.evidence,
+      ...(fact.evidence.excerpt === undefined ? {} : { excerpt: redactSensitiveText(fact.evidence.excerpt) })
+    }
+  });
+}
+
+export function sanitizeCodeFacts(facts: CodeFact[]): CodeFact[] {
+  return facts.map(sanitizeCodeFact);
+}
+
+export function sanitizeStructuredData(input: unknown, knownSensitiveValues: string[] = []): unknown {
+  const candidates = [...new Set(knownSensitiveValues)]
+    .filter((value) => value.length >= 8 && value.length <= 512 && !/\s/.test(value) && value !== REDACTED_VALUE)
+    .sort((left, right) => right.length - left.length)
+    .map((value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  const knownPattern = candidates.length ? new RegExp(candidates.join('|'), 'g') : undefined;
+  const visit = (value: unknown): unknown => {
+    if (typeof value === 'string') return redactSensitiveText(knownPattern ? value.replace(knownPattern, REDACTED_VALUE) : value);
+    if (Array.isArray(value)) return value.map(visit);
+    if (value === null || typeof value !== 'object') return value;
+    return Object.fromEntries(Object.entries(value).map(([key, child]) => [
+      key,
+      isSensitiveIdentifier(key) && typeof child === 'string' ? REDACTED_VALUE : visit(child)
+    ]));
+  };
+  return visit(input);
+}
+
+export function sensitiveValuesFromFacts(facts: CodeFact[]): string[] {
+  return [...new Set(facts.flatMap((fact) => {
+    const sensitive = [fact.name, fact.owner, fact.target, fact.evidence.symbol].some(isSensitiveIdentifier);
+    return sensitive && fact.value && fact.value !== REDACTED_VALUE ? [fact.value] : [];
+  }))];
+}
+
 export const businessFeatureSchema = z.object({
   id: z.string(),
   name: z.string(),

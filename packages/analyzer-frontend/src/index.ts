@@ -3,7 +3,7 @@ import path from 'node:path';
 import { Node, Project, ScriptKind, SyntaxKind } from 'ts-morph';
 import { parse as parseVue } from '@vue/compiler-sfc';
 import type { SourceInventory } from '@bizdoc/project-scanner';
-import { codeFactSchema, stableId, type CodeFact, type Evidence } from '@bizdoc/business-model';
+import { codeFactSchema, sanitizeCodeFacts, stableId, type CodeFact, type Evidence } from '@bizdoc/business-model';
 
 function lineAt(source: string, index: number): number { return source.slice(0, index).split('\n').length; }
 function evidence(source: SourceInventory, file: string, text: string, index: number, symbol?: string): Evidence {
@@ -150,6 +150,6 @@ export class FrontendAnalyzer {
       const index = record.raw.indexOf(call.getText().slice(0, 80)); const ev = evidence(source, record.file, record.raw, Math.max(0, index), target);
       facts.push(codeFactSchema.parse({ id: stableId('fact', 'frontend-call', target, ev.id), kind: 'SERVICE_CALL', name: target, target, confidence: 'verified', evidence: ev }));
     }
-    return facts;
+    return sanitizeCodeFacts(facts);
   }
 }

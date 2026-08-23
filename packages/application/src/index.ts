@@ -118,7 +118,7 @@ export class ReviewDocumentUseCase {
 
 @Injectable()
 export class AttachScreenshotUseCase {
-  async execute(rootInput: string, documentId: string, sectionId: string, file: string, alt: string): Promise<{ assetId: string; markdownPath: string }> {
+  async execute(rootInput: string, documentId: string, sectionId: string, file: string, alt: string): Promise<{ assetId: string; markdownPath: string; revision: number }> {
     const root = path.resolve(rootInput); const persistence = new Persistence(root); persistence.migrate();
     const current = persistence.getDocument(documentId); const model = documentationModelSchema.parse(current.model);
     const manager = new ScreenshotManager(); const imported = await manager.import(root, file); const assetId = persistence.saveAsset(imported);
@@ -127,7 +127,7 @@ export class AttachScreenshotUseCase {
     const markdownPath = path.join(outputDir, 'document.md');
     const assetPaths = Object.fromEntries(Object.entries(persistence.assets()).map(([id, asset]) => [id, path.relative(outputDir, asset.path)]));
     await writeFile(markdownPath, new MarkdownRenderer().render(updated, assetPaths)); persistence.saveDocument(updated, 'needs_review', markdownPath); persistence.close();
-    return { assetId, markdownPath };
+    return { assetId, markdownPath, revision };
   }
 }
 

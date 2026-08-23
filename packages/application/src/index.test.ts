@@ -39,8 +39,10 @@ describe('AttachScreenshotUseCase', () => {
     await writeFile(png, Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64'));
     await writeFile(webp, Buffer.from('UklGRiIAAABXRUJQVlA4IBYAAAAwAQCdASoBAAEAAUAmJaQAA3AA/v89WAAAAA==', 'base64'));
     const useCase = new AttachScreenshotUseCase();
-    await useCase.execute(root, document.id, 'step:1', png, 'First');
+    const first = await useCase.execute(root, document.id, 'step:1', png, 'First');
     const second = await useCase.execute(root, document.id, 'step:1', webp, 'Second');
+    expect(first.revision).toBe(2);
+    expect(second.revision).toBe(3);
     const markdown = await readFile(second.markdownPath, 'utf8');
     expect(markdown).toContain('![First](../../../../assets/');
     expect(markdown).toContain('![Second](../../../../assets/');

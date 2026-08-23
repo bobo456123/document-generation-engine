@@ -69,7 +69,12 @@ async function main(): Promise<void> {
   });
   program.command('generate').argument('[directory]', 'configured project workspace', '.').option('--feature <id>', 'generate one feature').option('--ai', 'use the configured AI provider', false).action(async (directory: string, options: { feature?: string; ai: boolean }) => {
     const result = await app.get(GenerateDocumentUseCase).execute(directory, options.feature, options.ai);
-    process.stdout.write(`${JSON.stringify({ count: result.documents.length, documents: result.documents.map((document, index) => ({ id: document.id, revision: document.revision, path: result.paths[index] })) }, null, 2)}\n`);
+    process.stdout.write(`${JSON.stringify({ count: result.documents.length, documents: result.documents.map((document, index) => ({
+      id: document.id,
+      revision: document.revision,
+      path: result.paths[index],
+      steps: document.steps.map((step) => ({ id: step.id, title: step.title }))
+    })) }, null, 2)}\n`);
   });
   program.command('screenshot-add').argument('<document-id>').argument('<section-id>').argument('<file>').option('--alt <text>', 'image alt text', '页面截图').option('--directory <path>', 'configured workspace', '.').action(async (documentId: string, sectionId: string, file: string, options: { alt: string; directory: string }) => {
     await addScreenshot(app, options.directory, documentId, sectionId, file, options.alt);

@@ -50,7 +50,7 @@ async function publishFeishu(app: Awaited<ReturnType<typeof NestFactory.createAp
   if (!appId || !appSecret) throw new Error('FEISHU_APP_ID and FEISHU_APP_SECRET environment variables are required');
   const persistence = new Persistence(root); persistence.migrate(); const current = persistence.getDocument(documentId); const model = current.model as { title?: string; steps?: Array<{ screenshots?: unknown[] }> }; persistence.close();
   const imageCount = model.steps?.reduce((count, step) => count + (step.screenshots?.length ?? 0), 0) ?? 0;
-  process.stdout.write(`Target space: ${target.space_id}\nParent node: ${target.parent_node_token ?? '(root)'}\nDocument: ${model.title ?? documentId}\nRevision: ${current.revision}\nImages: ${imageCount}\n`);
+  process.stdout.write(`Target space: ${target.space_id}\nParent node: ${target.parent_node_token ?? '(root)'}\nDocument: ${model.title ?? documentId}\nRevision: ${current.revision}\nImages: ${imageCount}\n${imageCount > 0 ? 'Required image scope: docs:document.media:upload\n' : ''}`);
   const publisher = new FeishuPublisher(new FeishuSdkClient({ appId, appSecret }), { id: `feishu:${target.space_id}`, spaceId: target.space_id, ...(target.parent_node_token ? { parentNodeToken: target.parent_node_token } : {}) });
   const result = await app.get(PublishDocumentUseCase).execute(root, documentId, `feishu:${target.space_id}`, publisher);
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);

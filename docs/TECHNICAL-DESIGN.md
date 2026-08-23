@@ -483,8 +483,8 @@ bizdoc generate --publish feishu
 2. 获取 tenant access token；
 3. 确保知识库目录节点存在；
 4. 创建或定位对应飞书文档；
-5. 上传截图并获得飞书资源标识；
-6. 将 `DocumentationModel` 转换为飞书 Block；
+5. 上传截图并获得飞书资源标识；包含截图时应用需具备 `docs:document.media:upload`；
+6. 将 `DocumentationModel` 转换为飞书 Block；更新既有文档时先完整追加新 Block，成功后再删除旧 Block，避免图片或正文写入失败清空旧内容；
 7. 分批写入正文并维护顺序；
 8. 保存本地与远端映射、版本和发布结果。
 

@@ -46,8 +46,8 @@ FEISHU_APP_ID=... FEISHU_APP_SECRET=... pnpm bizdoc publish feishu --document <d
 
 真实模型生成需要在 `.bizdoc/project.yaml` 配置 `ai.provider` 与 `ai.model`，执行 `generate --ai`，并设置对应的 `OPENAI_API_KEY`、`DEEPSEEK_API_KEY`、`DASHSCOPE_API_KEY`、`ANTHROPIC_API_KEY` 或 `AI_API_KEY`。未指定 `--ai` 时生成带阻塞审核项的证据模板草稿。
 
-飞书发布还需要在 `.bizdoc/project.yaml` 配置测试知识空间的 `space_id`，并可选配置 `parent_node_token`。应用身份至少需要 `wiki:wiki` 和 `docx:document`；上传截图还需要云空间素材上传权限。每次真实写入前都应确认目标空间和文档清单。
-只有已批准且不存在未解决 blocking 审核项的修订允许发布。显式批准将审核解决状态单独持久化，不修改不可变文档修订；截图资源会在任何远端正文修改前完成本地预检。
+飞书发布还需要在 `.bizdoc/project.yaml` 配置测试知识空间的 `space_id`，并可选配置 `parent_node_token`。应用身份至少需要 `wiki:wiki` 和 `docx:document`；包含截图的文档还必须开通 `docs:document.media:upload`。权限变更后需要发布新的应用版本或确保变更已对当前测试企业生效。每次真实写入前都应确认目标空间和文档清单。
+只有已批准且不存在未解决 blocking 审核项的修订允许发布。显式批准将审核解决状态单独持久化，不修改不可变文档修订；截图资源会在任何远端正文修改前完成本地预检。更新既有飞书文档时，系统先上传全部图片并完整追加新正文，全部成功后才删除旧正文；图片或正文写入失败不会删除旧内容。
 
 ## Documentation
 

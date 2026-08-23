@@ -4,7 +4,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Persistence } from '@bizdoc/persistence';
 import { PublishError, type Publisher } from '@bizdoc/publisher';
-import { AnalyzeProjectUseCase, GenerateDocumentUseCase, PublishDocumentUseCase, ReviewDocumentUseCase, selectComposerFacts } from './index.js';
+import { AnalyzeProjectUseCase, AttachScreenshotUseCase, GenerateDocumentUseCase, PublishDocumentUseCase, ReviewDocumentUseCase, selectComposerFacts } from './index.js';
 
 const roots: string[] = [];
 afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))));
@@ -22,6 +22,29 @@ describe('selectComposerFacts', () => {
       apiRefs: [], entities: [], fields: [], rules: [], outcomes: [], confidence: 'verified', evidenceIds: ['evidence:f', 'evidence:b']
     }, facts);
     expect(selected.map((fact) => fact.id)).toEqual(['fact:frontend', 'fact:condition', 'fact:backend']);
+  });
+});
+
+describe('AttachScreenshotUseCase', () => {
+  it('keeps relative paths for all existing screenshots when adding another revision', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'bizdoc-attach-')); roots.push(root); await mkdir(path.join(root, '.bizdoc'));
+    const persistence = new Persistence(root); persistence.migrate();
+    const document = {
+      id: 'document:screenshots', featureId: 'feature:screenshots', title: 'Screenshots', roles: [], scenarios: [],
+      steps: [{ id: 'step:1', title: 'Step', instruction: { text: 'Do it', evidenceIds: [], confidence: 'inferred' as const }, screenshots: [] }],
+      fields: [], outcomes: [], notices: [], faqs: [], relatedFeatureIds: [], reviewItems: [], revision: 1
+    };
+    persistence.saveDocument(document, 'needs_review', path.join(root, 'revision-1.md')); persistence.close();
+    const png = path.join(root, 'first.png'); const webp = path.join(root, 'second.webp');
+    await writeFile(png, Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64'));
+    await writeFile(webp, Buffer.from('UklGRiIAAABXRUJQVlA4IBYAAAAwAQCdASoBAAEAAUAmJaQAA3AA/v89WAAAAA==', 'base64'));
+    const useCase = new AttachScreenshotUseCase();
+    await useCase.execute(root, document.id, 'step:1', png, 'First');
+    const second = await useCase.execute(root, document.id, 'step:1', webp, 'Second');
+    const markdown = await readFile(second.markdownPath, 'utf8');
+    expect(markdown).toContain('![First](../../../../assets/');
+    expect(markdown).toContain('![Second](../../../../assets/');
+    expect(markdown).not.toContain('](asset:');
   });
 });
 

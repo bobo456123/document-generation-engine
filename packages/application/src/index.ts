@@ -124,8 +124,9 @@ export class AttachScreenshotUseCase {
     const manager = new ScreenshotManager(); const imported = await manager.import(root, file); const assetId = persistence.saveAsset(imported);
     const revision = persistence.nextRevision(documentId); const updated = { ...manager.attach(model, sectionId, assetId, alt), revision, reviewItems: [...model.reviewItems, { id: `${documentId}:review:screenshot:${revision}`, sectionId, message: '请确认截图与操作步骤一致且不包含敏感数据。', severity: 'blocking' as const }] };
     const outputDir = path.join(root, '.bizdoc', 'output', 'documents', documentId.replace(':', '-'), `revision-${revision}`); await mkdir(outputDir, { recursive: true });
-    const markdownPath = path.join(outputDir, 'document.md'); const relative = path.relative(outputDir, imported.path);
-    await writeFile(markdownPath, new MarkdownRenderer().render(updated, { [assetId]: relative })); persistence.saveDocument(updated, 'needs_review', markdownPath); persistence.close();
+    const markdownPath = path.join(outputDir, 'document.md');
+    const assetPaths = Object.fromEntries(Object.entries(persistence.assets()).map(([id, asset]) => [id, path.relative(outputDir, asset.path)]));
+    await writeFile(markdownPath, new MarkdownRenderer().render(updated, assetPaths)); persistence.saveDocument(updated, 'needs_review', markdownPath); persistence.close();
     return { assetId, markdownPath };
   }
 }

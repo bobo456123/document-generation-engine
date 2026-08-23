@@ -7,7 +7,7 @@ import * as lark from '@larksuiteoapi/node-sdk';
 export interface FeishuCredentials { appId: string; appSecret: string }
 export interface FeishuTarget { id: string; spaceId: string; parentNodeToken?: string }
 export interface FeishuApiClient { request<T>(method: string, route: string, body?: unknown): Promise<T>; uploadImage(documentToken: string, filePath: string, mimeType?: string): Promise<string> }
-export interface FeishuBlock { block_type: number; text?: { elements: Array<{ text_run: { content: string } }> }; heading1?: { elements: Array<{ text_run: { content: string } }> }; heading2?: { elements: Array<{ text_run: { content: string } }> }; bullet?: { elements: Array<{ text_run: { content: string } }> }; ordered?: { elements: Array<{ text_run: { content: string } }> }; image?: { token: string }; table?: { property: { row_size: number; column_size: number; column_width?: number[]; header_row?: boolean } }; tableRows?: string[][] }
+export interface FeishuBlock { block_type: number; text?: { elements: Array<{ text_run: { content: string } }> }; heading1?: { elements: Array<{ text_run: { content: string } }> }; heading2?: { elements: Array<{ text_run: { content: string } }> }; bullet?: { elements: Array<{ text_run: { content: string } }> }; ordered?: { elements: Array<{ text_run: { content: string } }> }; image?: { token?: string }; table?: { property: { row_size: number; column_size: number; column_width?: number[]; header_row?: boolean } }; table_cell?: Record<string, never>; tableRows?: string[][]; assetId?: string }
 export interface FeishuDescendant extends Omit<FeishuBlock, 'tableRows'> { block_id: string; children?: string[] }
 
 const silentSdkLogger = {
@@ -20,7 +20,8 @@ const silentSdkLogger = {
 
 export function toFeishuBlocks(document: DocumentationModel, imageTokens: Record<string, string> = {}): FeishuBlock[] {
   const text = (content: string): Array<{ text_run: { content: string } }> => [{ text_run: { content } }];
-  const blocks: FeishuBlock[] = [{ block_type: 3, heading1: { elements: text(document.title) } }];
+  // The Docx page already renders its native title above the content.
+  const blocks: FeishuBlock[] = [];
   const section = (title: string, values: string[]): void => {
     blocks.push({ block_type: 4, heading2: { elements: text(title) } });
     if (!values.length) blocks.push({ block_type: 2, text: { elements: text('待确认') } });
@@ -34,34 +35,35 @@ export function toFeishuBlocks(document: DocumentationModel, imageTokens: Record
     blocks.push({ block_type: 13, ordered: { elements: text(`${step.title}：${step.instruction.text}`) } });
     step.screenshots.forEach((screenshot) => {
       const token = imageTokens[screenshot.assetId];
-      if (token) blocks.push({ block_type: 27, image: { token } });
+      blocks.push({ block_type: 27, image: token ? { token } : {}, assetId: screenshot.assetId });
     });
   });
   blocks.push({ block_type: 4, heading2: { elements: text('字段说明') } });
   if (document.fields.length) {
     const rows = [['字段', '是否必填', '说明'], ...document.fields.map((field) => [field.name, field.required === true ? '是' : field.required === false ? '否' : '待确认', field.description.text])];
-    blocks.push({ block_type: 31, table: { property: { row_size: rows.length, column_size: 3, column_width: [180, 100, 360], header_row: true } }, tableRows: rows });
+    blocks.push({ block_type: 31, table: { property: { row_size: rows.length, column_size: 3, column_width: [200, 120, 480], header_row: true } }, tableRows: rows });
   } else blocks.push({ block_type: 2, text: { elements: text('暂无明确字段证据') } });
   section('操作结果', document.outcomes.map((item) => item.text)); section('注意事项', document.notices.map((item) => item.text));
   section('常见问题', document.faqs.map((item) => `${item.question}：${item.answer.text}`));
   return blocks;
 }
 
-export function toFeishuDescendants(blocks: FeishuBlock[], offset = 0): { children_id: string[]; descendants: FeishuDescendant[]; index: number } {
-  const children_id: string[] = []; const descendants: FeishuDescendant[] = [];
+export function toFeishuDescendants(blocks: FeishuBlock[], offset = 0): { children_id: string[]; descendants: FeishuDescendant[]; index: number; imageBindings: Record<string, string> } {
+  const children_id: string[] = []; const descendants: FeishuDescendant[] = []; const imageBindings: Record<string, string> = {};
   blocks.forEach((block, blockIndex) => {
     const blockId = `local-${offset + blockIndex}`; children_id.push(blockId);
-    const { tableRows, ...content } = block;
+    const { tableRows, assetId, ...content } = block;
+    if (assetId) imageBindings[blockId] = assetId;
     if (!tableRows) { descendants.push({ ...content, block_id: blockId }); return; }
     const cellIds = tableRows.flatMap((row, rowIndex) => row.map((_cell, columnIndex) => `${blockId}-cell-${rowIndex}-${columnIndex}`));
     descendants.push({ ...content, block_id: blockId, children: cellIds });
     tableRows.forEach((row, rowIndex) => row.forEach((cell, columnIndex) => {
       const cellId = `${blockId}-cell-${rowIndex}-${columnIndex}`; const textId = `${cellId}-text`;
-      descendants.push({ block_id: cellId, block_type: 32, children: [textId] });
+      descendants.push({ block_id: cellId, block_type: 32, table_cell: {}, children: [textId] });
       descendants.push({ block_id: textId, block_type: 2, text: { elements: [{ text_run: { content: cell } }] } });
     }));
   });
-  return { children_id, descendants, index: offset };
+  return { children_id, descendants, index: offset, imageBindings };
 }
 
 export class FeishuHttpClient {
@@ -134,6 +136,10 @@ export interface FeishuSdkLike {
   drive: { media: { uploadAll(payload: { data: { file_name: string; parent_type: 'docx_image'; parent_node: string; size: number; file: Buffer } }): Promise<{ file_token?: string } | null> } };
 }
 
+function isFeishuAuthorizationError(code: unknown, message: unknown): boolean {
+  return code === 99991663 || code === 99991672 || /access denied|scope.*required|权限/.test(String(message ?? '').toLowerCase());
+}
+
 function sdkErrorStatus(error: unknown): number | undefined {
   if (!error || typeof error !== 'object' || !('response' in error)) return undefined;
   const response = error.response;
@@ -152,6 +158,14 @@ function sdkErrorDetail(error: unknown): string {
     if (code || message) return [code, message].filter(Boolean).join(': ');
   }
   return typeof data === 'string' ? data : error instanceof Error ? error.message : String(error);
+}
+
+function sdkErrorIsAuthorization(error: unknown): boolean {
+  if (!error || typeof error !== 'object' || !('response' in error)) return false;
+  const response = error.response;
+  if (!response || typeof response !== 'object' || !('data' in response)) return false;
+  const data = response.data;
+  return Boolean(data && typeof data === 'object' && isFeishuAuthorizationError('code' in data ? data.code : undefined, 'msg' in data ? data.msg : 'message' in data ? data.message : undefined));
 }
 
 export class FeishuSdkClient implements FeishuApiClient {
@@ -174,7 +188,7 @@ export class FeishuSdkClient implements FeishuApiClient {
         break;
       } catch (error) {
         const status = sdkErrorStatus(error); const retryable = status === 429 || status === undefined || status >= 500;
-        const category = status === 401 || status === 403 ? 'AUTHORIZATION' : status === 429 ? 'RATE_LIMIT' : status === undefined ? 'NETWORK' : status === 400 || status === 422 ? 'CONTENT' : 'REMOTE_API';
+        const category = status === 401 || status === 403 || sdkErrorIsAuthorization(error) ? 'AUTHORIZATION' : status === 429 ? 'RATE_LIMIT' : status === undefined ? 'NETWORK' : status === 400 || status === 422 ? 'CONTENT' : 'REMOTE_API';
         lastError = new PublishError(`Feishu SDK request failed${status ? ` (${status})` : ''}: ${sdkErrorDetail(error)}`, category, retryable, status);
         if (!retryable) break;
         if (attempt < 2) await this.wait(250 * 2 ** attempt);
@@ -192,7 +206,7 @@ export class FeishuSdkClient implements FeishuApiClient {
         lastError = new PublishError('Feishu SDK image upload returned no file token', 'REMOTE_API', false); break;
       } catch (error) {
         const status = sdkErrorStatus(error); const retryable = status === 429 || status === undefined || status >= 500;
-        const category = status === 401 || status === 403 ? 'AUTHORIZATION' : status === 429 ? 'RATE_LIMIT' : status === undefined ? 'NETWORK' : status >= 500 ? 'REMOTE_API' : 'CONTENT';
+        const category = status === 401 || status === 403 || sdkErrorIsAuthorization(error) ? 'AUTHORIZATION' : status === 429 ? 'RATE_LIMIT' : status === undefined ? 'NETWORK' : status >= 500 ? 'REMOTE_API' : 'CONTENT';
         lastError = new PublishError(`Feishu SDK image upload failed${status ? ` (${status})` : ''}: ${sdkErrorDetail(error)}`, category, retryable, status);
         if (!retryable) break;
         if (attempt < 2) await this.wait(250 * 2 ** attempt);
@@ -223,19 +237,37 @@ export class FeishuPublisher implements Publisher {
     }
     if (!nodeToken || !documentToken) throw new PublishError('Incomplete Feishu publication mapping', 'REMOTE_API', false);
     try {
+      let existingChildCount = 0;
       if (!created) {
         const children = await this.client.request<{ data?: { items?: unknown[] } }>('GET', `/docx/v1/documents/${documentToken}/blocks/${documentToken}/children?page_size=500`);
-        const count = children.data?.items?.length ?? 0;
-        if (count > 0) await this.client.request('DELETE', `/docx/v1/documents/${documentToken}/blocks/${documentToken}/children/batch_delete`, { start_index: 0, end_index: count });
+        existingChildCount = children.data?.items?.length ?? 0;
       }
-      const imageTokens: Record<string, string> = {};
+      const blocks = toFeishuBlocks(input.document);
+      const imageBlockIds: Record<string, string> = {};
+      let blockIndex = 0;
+      while (blockIndex < blocks.length) {
+        const imageBlock = blocks[blockIndex];
+        if (imageBlock?.assetId) {
+          const createdImage = await this.client.request<{ data?: { children?: Array<{ block_id?: string }> } }>('POST', `/docx/v1/documents/${documentToken}/blocks/${documentToken}/children`, { children: [{ block_type: 27, image: {} }] });
+          const imageBlockId = createdImage.data?.children?.[0]?.block_id;
+          if (!imageBlockId) throw new PublishError(`Feishu did not return an image block ID for ${imageBlock.assetId}`, 'CONTENT', false);
+          imageBlockIds[imageBlock.assetId] = imageBlockId;
+          blockIndex += 1; continue;
+        }
+        const end = Math.min(blockIndex + 50, blocks.length);
+        let chunkEnd = blockIndex;
+        while (chunkEnd < end && !blocks[chunkEnd]?.assetId) chunkEnd += 1;
+        const payload = toFeishuDescendants(blocks.slice(blockIndex, chunkEnd), blockIndex);
+        await this.client.request('POST', `/docx/v1/documents/${documentToken}/blocks/${documentToken}/descendant`, { children_id: payload.children_id, descendants: payload.descendants });
+        blockIndex = chunkEnd;
+      }
       for (const { screenshot, asset } of screenshotAssets) {
-        imageTokens[screenshot.assetId] = await this.client.uploadImage(documentToken, asset.path, asset.mimeType);
+        const imageBlockId = imageBlockIds[screenshot.assetId];
+        if (!imageBlockId) throw new PublishError(`Feishu did not return an image block mapping for ${screenshot.assetId}`, 'CONTENT', false);
+        const imageToken = await this.client.uploadImage(imageBlockId, asset.path, asset.mimeType);
+        await this.client.request('PATCH', `/docx/v1/documents/${documentToken}/blocks/${imageBlockId}`, { replace_image: { token: imageToken } });
       }
-      const blocks = toFeishuBlocks(input.document, imageTokens);
-      for (let index = 0; index < blocks.length; index += 50) {
-        await this.client.request('POST', `/docx/v1/documents/${documentToken}/blocks/${documentToken}/descendant`, toFeishuDescendants(blocks.slice(index, index + 50), index));
-      }
+      if (existingChildCount > 0) await this.client.request('DELETE', `/docx/v1/documents/${documentToken}/blocks/${documentToken}/children/batch_delete`, { start_index: 0, end_index: existingChildCount });
       return { nodeToken, documentToken, created, url: `https://feishu.cn/docx/${documentToken}` };
     } catch (error) {
       const publishError = error instanceof PublishError ? error : new PublishError(error instanceof Error ? error.message : String(error), 'REMOTE_API', false);

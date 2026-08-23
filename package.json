@@ -20,7 +20,8 @@
     "test": "turbo run test:workspace --filter=document-generation-engine",
     "test:workspace": "vitest run",
     "test:watch": "vitest",
-    "check": "pnpm lint && pnpm typecheck && pnpm test && pnpm build"
+    "check:docs": "node scripts/check-docs.mjs",
+    "check": "pnpm check:docs && pnpm lint && pnpm typecheck && pnpm test && pnpm build"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^4.0.41",

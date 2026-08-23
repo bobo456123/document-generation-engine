@@ -1,7 +1,7 @@
 # Goal 1：建立工程基座
 
 > 对应技术方案：Monorepo 结构、NestJS 应用设计、数据持久化、错误处理与安全基线  
-> 前置条件：以 `docs/MVP-PRD.md` 和 `docs/TECHNICAL-DESIGN.md` 为需求与架构基线  
+> 前置条件：以 [`../PRD.md`](../PRD.md) 和 [`../TECHNICAL-DESIGN.md`](../TECHNICAL-DESIGN.md) 为需求与架构基线  
 > 后续 Goal：[Goal 2：代码解析闭环](./GOAL-02-CODE-ANALYSIS.md)
 
 ## Goal
@@ -43,7 +43,7 @@
 - 不实现假装可用的解析器、AI Composer 或飞书 Publisher；未实现模块应明确返回受控的 `NOT_IMPLEMENTED` 或不对外暴露命令。
 - 不执行被分析项目的安装、构建或脚本。
 - 密钥不得写入配置样例、SQLite、日志或测试 Fixture。
-- 不擅自扩大 `docs/MVP-PRD.md` 的 MVP 范围。
+- 不擅自扩大 [`../PRD.md`](../PRD.md) 的 MVP 范围。
 - 若当前目录尚未初始化 Git，可以完成工程文件，但不得自动提交；应在结果中明确提示版本管理状态。
 
 ## 确认

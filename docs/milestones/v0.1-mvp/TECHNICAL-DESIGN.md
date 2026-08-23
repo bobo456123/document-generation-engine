@@ -1,7 +1,7 @@
 # AI Business Documentation Engine MVP 技术方案
 
 > 文档状态：调研阶段技术基线  
-> 需求基线：[MVP-PRD.md](./MVP-PRD.md)  
+> 需求基线：[PRD.md](./PRD.md)  
 > 技术基线：Node.js Monorepo + NestJS  
 > 版本：0.1  
 > 更新日期：2026-08-18

@@ -2,7 +2,7 @@
 
 从 Spring Boot + Vue/React/Umi 源码提取可追溯业务事实，生成带截图的业务操作文档，并在人工审核后幂等发布到飞书知识库。
 
-当前 MVP 已完成，真实 CRM 三个试点的最终验收结论为 `GO`。详细证据见 [MVP 完成性审计](./docs/goals/COMPLETION-AUDIT.md) 和 [试点验收报告](./docs/PILOT-REPORT.md)。
+当前 MVP 已完成，真实 CRM 三个试点的最终验收结论为 `GO`。当前开发状态见 [docs 文档中心](./docs/README.md)，详细证据见 [MVP 完成性审计](./docs/milestones/v0.1-mvp/validation/COMPLETION-AUDIT.md) 和 [试点验收报告](./docs/milestones/v0.1-mvp/validation/PILOT-REPORT.md)。
 
 ## MVP 能力
 
@@ -308,9 +308,9 @@ pnpm bizdoc publish feishu \
 
 ## 开发文档
 
-- [MVP PRD](./docs/MVP-PRD.md)
-- [技术方案](./docs/TECHNICAL-DESIGN.md)
-- [Goal 1：工程基座](./docs/goals/GOAL-01-FOUNDATION.md)
-- [Goal 执行状态](./docs/goals/STATUS.md)
-- [MVP 完成性审计](./docs/goals/COMPLETION-AUDIT.md)
-- [CRM 试点验收报告](./docs/PILOT-REPORT.md)
+- [开发文档中心](./docs/README.md)
+- [当前开发状态](./docs/current/STATUS.md)
+- [当前交接](./docs/current/HANDOFF.md)
+- [当前路线图](./docs/current/ROADMAP.md)
+- [当前系统架构](./docs/architecture/OVERVIEW.md)
+- [v0.1 MVP 历史档案](./docs/milestones/v0.1-mvp/README.md)

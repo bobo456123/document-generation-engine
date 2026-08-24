@@ -10,5 +10,9 @@ export const documentRevisions = sqliteTable('document_revisions', { documentId:
 export const assets = sqliteTable('assets', { id: text('id').primaryKey(), hash: text('hash').notNull().unique(), mimeType: text('mime_type').notNull(), path: text('path').notNull(), metadataJson: text('metadata_json').notNull() });
 export const publicationTargets = sqliteTable('publication_targets', { id: text('id').primaryKey(), provider: text('provider').notNull(), configJson: text('config_json').notNull() });
 export const publications = sqliteTable('publications', { id: text('id').primaryKey(), documentId: text('document_id').notNull(), revision: integer('revision').notNull(), targetId: text('target_id').notNull(), remoteNodeToken: text('remote_node_token'), remoteDocumentToken: text('remote_document_token'), status: text('status').notNull(), errorCategory: text('error_category'), resultJson: text('result_json'), startedAt: text('started_at').notNull(), finishedAt: text('finished_at').notNull(), createdAt: text('created_at').notNull() });
+export const publicationNodeMappings = sqliteTable('publication_node_mappings', {
+  targetId: text('target_id').notNull(), localNodeId: text('local_node_id').notNull(), nodeKind: text('node_kind').notNull(), logicalParentId: text('logical_parent_id'), title: text('title').notNull(),
+  remoteNodeToken: text('remote_node_token').notNull(), remoteDocumentToken: text('remote_document_token').notNull(), remoteParentNodeToken: text('remote_parent_node_token'), createdAt: text('created_at').notNull(), updatedAt: text('updated_at').notNull()
+}, (table) => [primaryKey({ columns: [table.targetId, table.localNodeId] })]);
 
-export const schema = { projects, analysisRuns, codeFacts, businessSnapshots, businessFeatures, documents, documentRevisions, assets, publicationTargets, publications };
+export const schema = { projects, analysisRuns, codeFacts, businessSnapshots, businessFeatures, documents, documentRevisions, assets, publicationTargets, publications, publicationNodeMappings };

@@ -119,21 +119,23 @@ export class AiDocumentComposer implements DocumentComposer {
   }
 }
 
-function requiredEnvironment(name: string): string {
-  const value = process.env[name]; if (!value) throw new Error(`${name} is required for the configured AI provider`); return value;
+export type CredentialLookup = (name: string) => string | undefined;
+
+function requiredCredential(name: string, lookup: CredentialLookup): string {
+  const value = lookup(name); if (!value) throw new Error(`${name} is required for the configured AI provider`); return value;
 }
 
-export function createConfiguredComposer(config: NonNullable<ProjectConfig['ai']>): AiDocumentComposer {
+export function createConfiguredComposer(config: NonNullable<ProjectConfig['ai']>, lookup: CredentialLookup = (name) => process.env[name]): AiDocumentComposer {
   if (config.provider === 'openai') {
-    return new AiDocumentComposer(createOpenAI({ apiKey: requiredEnvironment('OPENAI_API_KEY'), ...(config.base_url ? { baseURL: config.base_url } : {}) })(config.model));
+    return new AiDocumentComposer(createOpenAI({ apiKey: requiredCredential('OPENAI_API_KEY', lookup), ...(config.base_url ? { baseURL: config.base_url } : {}) })(config.model));
   }
   if (config.provider === 'anthropic') {
-    return new AiDocumentComposer(createAnthropic({ apiKey: requiredEnvironment('ANTHROPIC_API_KEY'), ...(config.base_url ? { baseURL: config.base_url } : {}) })(config.model));
+    return new AiDocumentComposer(createAnthropic({ apiKey: requiredCredential('ANTHROPIC_API_KEY', lookup), ...(config.base_url ? { baseURL: config.base_url } : {}) })(config.model));
   }
   const settings = config.provider === 'deepseek'
-    ? { name: 'deepseek', apiKey: requiredEnvironment('DEEPSEEK_API_KEY'), baseURL: config.base_url ?? 'https://api.deepseek.com/v1' }
+    ? { name: 'deepseek', apiKey: requiredCredential('DEEPSEEK_API_KEY', lookup), baseURL: config.base_url ?? 'https://api.deepseek.com/v1' }
     : config.provider === 'qwen'
-      ? { name: 'qwen', apiKey: requiredEnvironment('DASHSCOPE_API_KEY'), baseURL: config.base_url ?? 'https://dashscope.aliyuncs.com/compatible-mode/v1' }
-      : { name: 'openai-compatible', apiKey: requiredEnvironment('AI_API_KEY'), baseURL: config.base_url ?? requiredEnvironment('AI_BASE_URL') };
+      ? { name: 'qwen', apiKey: requiredCredential('DASHSCOPE_API_KEY', lookup), baseURL: config.base_url ?? 'https://dashscope.aliyuncs.com/compatible-mode/v1' }
+      : { name: 'openai-compatible', apiKey: requiredCredential('AI_API_KEY', lookup), baseURL: config.base_url ?? requiredCredential('AI_BASE_URL', lookup) };
   return new AiDocumentComposer(createOpenAICompatible(settings)(config.model));
 }

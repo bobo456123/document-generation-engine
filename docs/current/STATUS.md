@@ -1,6 +1,6 @@
 ---
 document: current-status
-updated: 2026-08-23
+updated: 2026-08-24
 current_milestone: null
 active_work_items: []
 ---
@@ -9,8 +9,8 @@ active_work_items: []
 
 ## 当前结论
 
-- 当前版本：`v0.1.0 MVP`
-- 里程碑状态：已完成
+- 当前版本：`v0.1.1`
+- MVP 里程碑状态：已完成
 - 验收结论：`GO`
 - 当前活动里程碑：无
 - 当前活动工作项：无
@@ -19,10 +19,11 @@ MVP 已完成 Spring Boot + Vue/React/Umi 解析、业务模型构建、AI/模�
 
 ## 当前质量基线
 
-- 最后完成运行时代码验证的提交：`1119e7f`
+- 最后完成运行时代码验证的提交：尚未提交；当前工作树基于 `67c95dd`
 - 文档体系重构 [WI-0001](../work-items/completed/WI-0001-docs-lifecycle.md) 已完成，不改变运行时 API、数据库模型或业务行为。
-- 最近一次完整门禁：17 个测试文件、72 个测试通过，文档检查、lint、类型检查和构建通过。
+- [WI-0002](../work-items/completed/WI-0002-cli-usability.md) 和 [WI-0003](../work-items/completed/WI-0003-legacy-document-classification.md) 已完成，交付 CLI 易用性、旧文档安全归类、占位模块发布门禁和真实飞书三级目录复验。
+- 最近一次完整门禁：19 个测试文件、115 个测试通过，文档检查、lint、类型检查和构建通过。
 
 ## 下一步
 
-下一项候选是 `v0.2 自动截图`。开始实现前必须先由用户确认范围，然后创建里程碑说明和第一个 `WI-*` 工作项；[路线图](./ROADMAP.md)中的 `proposed` 内容不能直接视为已批准需求。
+当前实现和验收已完成，工作树尚未提交。下一步等待用户明确要求 Git 提交；npm 在线分发、自动页面遍历截图、并发发布和失效映射修复仍是后续候选，开始前需建立新工作项。

@@ -5,10 +5,92 @@ import path from 'node:path';
 import * as lark from '@larksuiteoapi/node-sdk';
 
 export interface FeishuCredentials { appId: string; appSecret: string }
-export interface FeishuTarget { id: string; spaceId: string; parentNodeToken?: string }
+export interface FeishuTarget { id: string; spaceId: string; parentNodeToken?: string; manageNodeLocation?: boolean }
 export interface FeishuApiClient { request<T>(method: string, route: string, body?: unknown): Promise<T>; uploadImage(documentToken: string, filePath: string, mimeType?: string): Promise<string> }
 export interface FeishuBlock { block_type: number; text?: { elements: Array<{ text_run: { content: string } }> }; heading1?: { elements: Array<{ text_run: { content: string } }> }; heading2?: { elements: Array<{ text_run: { content: string } }> }; bullet?: { elements: Array<{ text_run: { content: string } }> }; ordered?: { elements: Array<{ text_run: { content: string } }> }; image?: { token?: string }; table?: { property: { row_size: number; column_size: number; column_width?: number[]; header_row?: boolean } }; table_cell?: Record<string, never>; tableRows?: string[][]; assetId?: string }
 export interface FeishuDescendant extends Omit<FeishuBlock, 'tableRows'> { block_id: string; children?: string[] }
+export interface FeishuClassification { system: { id: string; name: string }; module: { id: string; name: string } }
+export interface PublicationNodeMapping { nodeToken: string; documentToken: string; parentNodeToken?: string; title: string }
+export interface PublicationNodeMappingStore {
+  publicationNodeMapping(targetId: string, localNodeId: string): PublicationNodeMapping | undefined;
+  savePublicationNodeMapping(input: { targetId: string; localNodeId: string; nodeKind: 'system' | 'module' | 'document'; logicalParentId?: string; title: string; nodeToken: string; documentToken: string; parentNodeToken?: string }): void;
+}
+
+interface FeishuNodeDetail { node_token?: string; obj_token?: string; parent_node_token?: string; title?: string; obj_type?: string; node_type?: string }
+
+function sameParent(actual: string | undefined, expected: string | undefined): boolean {
+  return (actual ?? '') === (expected ?? '');
+}
+
+function canAutomaticallyRetry(method: string, route: string): boolean {
+  const normalized = method.toUpperCase();
+  return normalized === 'GET' || normalized === 'PUT' || normalized === 'PATCH'
+    || (normalized === 'POST' && /\/(?:move|update_title)$/.test(route));
+}
+
+async function findUniqueChild(client: FeishuApiClient, target: Pick<FeishuTarget, 'spaceId' | 'parentNodeToken'>, title: string): Promise<FeishuNodeDetail | undefined> {
+  const matches: FeishuNodeDetail[] = [];
+  const seenPageTokens = new Set<string>();
+  let pageToken: string | undefined;
+  while (true) {
+    const query = new URLSearchParams({ page_size: '50' });
+    if (target.parentNodeToken) query.set('parent_node_token', target.parentNodeToken);
+    if (pageToken) query.set('page_token', pageToken);
+    const response = await client.request<{ data?: { items?: FeishuNodeDetail[]; has_more?: boolean; page_token?: string; next_page_token?: string } }>('GET', `/wiki/v2/spaces/${target.spaceId}/nodes?${query.toString()}`);
+    for (const node of response.data?.items ?? []) {
+      if (node.title === title && (!node.obj_type || node.obj_type === 'docx') && (!node.node_type || node.node_type === 'origin')) matches.push(node);
+    }
+    if (!response.data?.has_more) break;
+    const nextPageToken = response.data.page_token ?? response.data.next_page_token;
+    if (!nextPageToken || seenPageTokens.has(nextPageToken)) throw new PublishError(`Feishu child-node pagination did not advance under ${target.parentNodeToken ?? 'the space root'}`, 'REMOTE_API', false);
+    seenPageTokens.add(nextPageToken); pageToken = nextPageToken;
+  }
+  if (matches.length > 1) throw new PublishError(`Multiple Feishu child nodes named "${title}" already exist under the target parent; resolve the duplicate titles before publishing`, 'CONTENT', false);
+  const match = matches[0];
+  if (match && (!match.node_token || !match.obj_token)) throw new PublishError(`Feishu returned an incomplete existing node mapping for "${title}"`, 'REMOTE_API', false);
+  return match;
+}
+
+export class FeishuHierarchyResolver {
+  constructor(private readonly client: FeishuApiClient, private readonly target: FeishuTarget, private readonly mappings: PublicationNodeMappingStore) {}
+
+  private async ensureContainer(input: { localNodeId: string; logicalParentId?: string; title: string; parentNodeToken?: string; nodeKind: 'system' | 'module' }): Promise<PublicationNodeMapping> {
+    const existing = this.mappings.publicationNodeMapping(this.target.id, input.localNodeId);
+    let node: FeishuNodeDetail | undefined;
+    if (existing) {
+      const detail = await this.client.request<{ data?: { node?: FeishuNodeDetail } }>('GET', `/wiki/v2/spaces/get_node?token=${encodeURIComponent(existing.nodeToken)}`);
+      node = detail.data?.node;
+      if (!node?.node_token || !node.obj_token) throw new PublishError(`Feishu ${input.nodeKind} mapping is no longer valid: ${input.title}`, 'REMOTE_API', false);
+      if (!sameParent(node.parent_node_token, input.parentNodeToken)) {
+        await this.client.request('POST', `/wiki/v2/spaces/${this.target.spaceId}/nodes/${node.node_token}/move`, input.parentNodeToken ? { target_parent_token: input.parentNodeToken } : {});
+      }
+      if ((node.title ?? existing.title) !== input.title) {
+        await this.client.request('POST', `/wiki/v2/spaces/${this.target.spaceId}/nodes/${node.node_token}/update_title`, { title: input.title });
+      }
+    } else {
+      node = await findUniqueChild(this.client, { spaceId: this.target.spaceId, ...(input.parentNodeToken ? { parentNodeToken: input.parentNodeToken } : {}) }, input.title);
+      if (!node) {
+        const created = await this.client.request<{ data?: { node?: FeishuNodeDetail } }>('POST', `/wiki/v2/spaces/${this.target.spaceId}/nodes`, {
+          obj_type: 'docx', ...(input.parentNodeToken ? { parent_node_token: input.parentNodeToken } : {}), node_type: 'origin', title: input.title
+        });
+        node = created.data?.node;
+        if (!node?.node_token || !node.obj_token) throw new PublishError(`Feishu did not return a complete ${input.nodeKind} node mapping`, 'REMOTE_API', false);
+      }
+    }
+    if (!node?.node_token || !node.obj_token) throw new PublishError(`Feishu returned an incomplete ${input.nodeKind} node mapping`, 'REMOTE_API', false);
+    const mapping = { nodeToken: node.node_token, documentToken: node.obj_token, title: input.title, ...(input.parentNodeToken ? { parentNodeToken: input.parentNodeToken } : {}) };
+    this.mappings.savePublicationNodeMapping({ targetId: this.target.id, localNodeId: input.localNodeId, nodeKind: input.nodeKind, ...(input.logicalParentId ? { logicalParentId: input.logicalParentId } : {}), title: input.title, nodeToken: mapping.nodeToken, documentToken: mapping.documentToken, ...(input.parentNodeToken ? { parentNodeToken: input.parentNodeToken } : {}) });
+    return mapping;
+  }
+
+  async ensurePath(classification: FeishuClassification): Promise<{ system: PublicationNodeMapping; module: PublicationNodeMapping; displayPath: string }> {
+    await this.client.request('GET', `/wiki/v2/spaces/${this.target.spaceId}`);
+    if (this.target.parentNodeToken) await this.client.request('GET', `/wiki/v2/spaces/get_node?token=${encodeURIComponent(this.target.parentNodeToken)}`);
+    const system = await this.ensureContainer({ localNodeId: classification.system.id, title: classification.system.name, ...(this.target.parentNodeToken ? { parentNodeToken: this.target.parentNodeToken } : {}), nodeKind: 'system' });
+    const module = await this.ensureContainer({ localNodeId: classification.module.id, logicalParentId: classification.system.id, title: classification.module.name, parentNodeToken: system.nodeToken, nodeKind: 'module' });
+    return { system, module, displayPath: `${classification.system.name}/${classification.module.name}` };
+  }
+}
 
 const silentSdkLogger = {
   error: (): void => undefined,
@@ -85,6 +167,7 @@ export class FeishuHttpClient {
 
   async request<T>(method: string, route: string, body?: unknown): Promise<T> {
     const token = await this.accessToken(); let lastError: PublishError | undefined;
+    const automaticRetry = canAutomaticallyRetry(method, route);
     for (let attempt = 0; attempt < 3; attempt += 1) {
       try {
         const response = await this.fetcher(`${this.baseUrl}${route}`, { method, headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
@@ -93,12 +176,13 @@ export class FeishuHttpClient {
         const retryable = response.status === 429 || response.status >= 500;
         const category = response.status === 401 || response.status === 403 ? 'AUTHORIZATION' : response.status === 429 ? 'RATE_LIMIT' : response.status === 400 || response.status === 422 ? 'CONTENT' : 'REMOTE_API';
         lastError = new PublishError(`Feishu request failed (${response.status}): ${data.msg ?? 'unknown error'}`, category, retryable, response.status);
-        if (!retryable) break;
+        if (!retryable || !automaticRetry) break;
         const retryAfter = Number(response.headers.get('retry-after'));
         await this.wait(Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter * 1000 : 250 * 2 ** attempt);
       } catch (error) {
         if (error instanceof PublishError) throw error;
         lastError = new PublishError(`Feishu network request failed: ${error instanceof Error ? error.message : String(error)}`, 'NETWORK', true);
+        if (!automaticRetry) break;
         if (attempt < 2) await this.wait(250 * 2 ** attempt);
       }
     }
@@ -179,6 +263,7 @@ export class FeishuSdkClient implements FeishuApiClient {
 
   async request<T>(method: string, route: string, body?: unknown): Promise<T> {
     let lastError: PublishError | undefined;
+    const automaticRetry = canAutomaticallyRetry(method, route);
     for (let attempt = 0; attempt < 3; attempt += 1) {
       try {
         const url = route.startsWith('/open-apis/') ? route : `/open-apis${route}`;
@@ -190,7 +275,8 @@ export class FeishuSdkClient implements FeishuApiClient {
         const status = sdkErrorStatus(error); const retryable = status === 429 || status === undefined || status >= 500;
         const category = status === 401 || status === 403 || sdkErrorIsAuthorization(error) ? 'AUTHORIZATION' : status === 429 ? 'RATE_LIMIT' : status === undefined ? 'NETWORK' : status === 400 || status === 422 ? 'CONTENT' : 'REMOTE_API';
         lastError = new PublishError(`Feishu SDK request failed${status ? ` (${status})` : ''}: ${sdkErrorDetail(error)}`, category, retryable, status);
-        if (!retryable) break;
+        if (!retryable || !automaticRetry) break;
+        if (!automaticRetry) break;
         if (attempt < 2) await this.wait(250 * 2 ** attempt);
       }
     }
@@ -216,15 +302,25 @@ export class FeishuSdkClient implements FeishuApiClient {
   }
 }
 
-export class FeishuPublisher implements Publisher {
-  constructor(private readonly client: FeishuApiClient, private readonly target: FeishuTarget) {}
-  async publish(input: PublishInput): Promise<PublishResult> {
-    const screenshotAssets = input.document.steps.flatMap((step) => step.screenshots.map((screenshot) => {
+function screenshotAssets(input: PublishInput): Array<{ screenshot: { assetId: string; alt: string }; asset: NonNullable<PublishInput['assets']>[string] }> {
+  return input.document.steps.flatMap((step) => step.screenshots.map((screenshot) => {
       const asset = input.assets?.[screenshot.assetId];
       if (!asset) throw new PublishError(`Screenshot asset is missing: ${screenshot.assetId}`, 'CONTENT', false);
       return { screenshot, asset };
-    }));
-    try { await Promise.all(screenshotAssets.map(({ asset }) => access(asset.path))); }
+  }));
+}
+
+export async function preflightFeishuPublish(input: PublishInput): Promise<void> {
+  const resolved = screenshotAssets(input);
+  try { await Promise.all(resolved.map(({ asset }) => access(asset.path))); }
+  catch { throw new PublishError('One or more screenshot files are unavailable', 'CONTENT', false); }
+}
+
+export class FeishuPublisher implements Publisher {
+  constructor(private readonly client: FeishuApiClient, private readonly target: FeishuTarget) {}
+  async publish(input: PublishInput): Promise<PublishResult> {
+    const resolvedScreenshotAssets = screenshotAssets(input);
+    try { await Promise.all(resolvedScreenshotAssets.map(({ asset }) => access(asset.path))); }
     catch { throw new PublishError('One or more screenshot files are unavailable', 'CONTENT', false); }
     await this.client.request('GET', `/wiki/v2/spaces/${this.target.spaceId}`);
     if (this.target.parentNodeToken) await this.client.request('GET', `/wiki/v2/spaces/get_node?token=${encodeURIComponent(this.target.parentNodeToken)}`);
@@ -232,10 +328,23 @@ export class FeishuPublisher implements Publisher {
     let nodeToken = input.existing?.nodeToken;
     let created = false;
     if (!documentToken) {
+      const conflicting = await findUniqueChild(this.client, this.target, input.document.title);
+      if (conflicting) throw new PublishError(`An unmanaged Feishu document named "${input.document.title}" already exists under the target module; refusing to overwrite it or create a duplicate`, 'CONTENT', false);
       const node = await this.client.request<{ data?: { node?: { node_token?: string; obj_token?: string } } }>('POST', `/wiki/v2/spaces/${this.target.spaceId}/nodes`, { obj_type: 'docx', ...(this.target.parentNodeToken ? { parent_node_token: this.target.parentNodeToken } : {}), node_type: 'origin', title: input.document.title });
       nodeToken = node.data?.node?.node_token; documentToken = node.data?.node?.obj_token; created = true;
     }
     if (!nodeToken || !documentToken) throw new PublishError('Incomplete Feishu publication mapping', 'REMOTE_API', false);
+    if (!created && this.target.manageNodeLocation) {
+      const detail = await this.client.request<{ data?: { node?: FeishuNodeDetail } }>('GET', `/wiki/v2/spaces/get_node?token=${encodeURIComponent(nodeToken)}`);
+      const node = detail.data?.node;
+      if (!node) throw new PublishError('Existing Feishu document mapping is no longer valid', 'REMOTE_API', false);
+      if (!sameParent(node.parent_node_token, this.target.parentNodeToken)) {
+        await this.client.request('POST', `/wiki/v2/spaces/${this.target.spaceId}/nodes/${nodeToken}/move`, this.target.parentNodeToken ? { target_parent_token: this.target.parentNodeToken } : {});
+      }
+      if (node.title && node.title !== input.document.title) {
+        await this.client.request('POST', `/wiki/v2/spaces/${this.target.spaceId}/nodes/${nodeToken}/update_title`, { title: input.document.title });
+      }
+    }
     try {
       let existingChildCount = 0;
       if (!created) {
@@ -261,7 +370,7 @@ export class FeishuPublisher implements Publisher {
         await this.client.request('POST', `/docx/v1/documents/${documentToken}/blocks/${documentToken}/descendant`, { children_id: payload.children_id, descendants: payload.descendants });
         blockIndex = chunkEnd;
       }
-      for (const { screenshot, asset } of screenshotAssets) {
+      for (const { screenshot, asset } of resolvedScreenshotAssets) {
         const imageBlockId = imageBlockIds[screenshot.assetId];
         if (!imageBlockId) throw new PublishError(`Feishu did not return an image block mapping for ${screenshot.assetId}`, 'CONTENT', false);
         const imageToken = await this.client.uploadImage(imageBlockId, asset.path, asset.mimeType);

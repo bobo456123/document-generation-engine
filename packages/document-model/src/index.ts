@@ -9,6 +9,10 @@ export const operationStepSchema = z.object({ id: z.string(), title: z.string(),
 export const reviewItemSchema = z.object({ id: z.string(), sectionId: z.string(), message: z.string(), severity: z.enum(['info', 'warning', 'blocking']) });
 export const documentationModelSchema = z.object({
   id: z.string(), featureId: z.string(), title: z.string(),
+  classification: z.object({
+    system: z.object({ id: z.string().min(1), name: z.string().min(1) }),
+    module: z.object({ id: z.string().min(1), name: z.string().min(1) })
+  }).optional(),
   sourceSnapshotId: z.string().optional(), sourceCommits: z.record(z.string(), z.string().nullable()).optional(),
   summary: docContentSchema.optional(), roles: z.array(docContentSchema), scenarios: z.array(docContentSchema), steps: z.array(operationStepSchema),
   fields: z.array(z.object({ name: z.string(), required: z.boolean().optional(), description: docContentSchema })),

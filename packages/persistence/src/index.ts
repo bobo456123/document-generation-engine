@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS review_item_resolutions (document_id TEXT NOT NULL, r
 CREATE TABLE IF NOT EXISTS assets (id TEXT PRIMARY KEY, hash TEXT NOT NULL UNIQUE, mime_type TEXT NOT NULL, path TEXT NOT NULL, metadata_json TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS publication_targets (id TEXT PRIMARY KEY, provider TEXT NOT NULL, config_json TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS publications (id TEXT PRIMARY KEY, document_id TEXT NOT NULL, revision INTEGER NOT NULL, target_id TEXT NOT NULL, remote_node_token TEXT, remote_document_token TEXT, status TEXT NOT NULL, error_category TEXT, result_json TEXT, started_at TEXT NOT NULL, finished_at TEXT NOT NULL, created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS publication_node_mappings (target_id TEXT NOT NULL, local_node_id TEXT NOT NULL, node_kind TEXT NOT NULL, logical_parent_id TEXT, title TEXT NOT NULL, remote_node_token TEXT NOT NULL, remote_document_token TEXT NOT NULL, remote_parent_node_token TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY(target_id, local_node_id));
 CREATE TABLE IF NOT EXISTS security_migrations (id TEXT PRIMARY KEY, applied_at TEXT NOT NULL);
 `;
 
@@ -154,6 +155,16 @@ export class Persistence {
     return { id: typed.document_id, model: JSON.parse(typed.model_json) as unknown, status: typed.status, markdownPath: typed.markdown_path, revision: typed.revision };
   }
 
+  listDocuments(): Array<{ id: string; featureId: string; title: string; revision: number; status: string; markdownPath: string | null; updatedAt: string; model: unknown }> {
+    const rows = this.db.prepare(`SELECT d.id,d.feature_id,r.model_json,r.revision,r.status,r.markdown_path,r.created_at
+      FROM documents d JOIN document_revisions r ON r.document_id=d.id AND r.revision=d.current_revision
+      ORDER BY r.created_at DESC,d.id ASC`).all() as Array<{ id: string; feature_id: string; model_json: string; revision: number; status: string; markdown_path: string | null; created_at: string }>;
+    return rows.map((row) => {
+      const model = JSON.parse(row.model_json) as { title?: unknown };
+      return { id: row.id, featureId: row.feature_id, title: typeof model.title === 'string' ? model.title : row.id, revision: row.revision, status: row.status, markdownPath: row.markdown_path, updatedAt: row.created_at, model };
+    });
+  }
+
   approveDocument(documentId: string, revision: number): void {
     const current = this.getDocument(documentId, revision);
     const model = current.model as { reviewItems?: Array<{ id?: unknown }> };
@@ -193,6 +204,20 @@ export class Persistence {
       ORDER BY created_at DESC LIMIT 1`).get(documentId, targetId) as { remote_node_token: string | null; remote_document_token: string | null } | undefined;
     if (!row) return undefined;
     return { ...(row.remote_node_token ? { nodeToken: row.remote_node_token } : {}), ...(row.remote_document_token ? { documentToken: row.remote_document_token } : {}) };
+  }
+
+  publicationNodeMapping(targetId: string, localNodeId: string): { nodeToken: string; documentToken: string; parentNodeToken?: string; title: string } | undefined {
+    const row = this.db.prepare(`SELECT remote_node_token,remote_document_token,remote_parent_node_token,title FROM publication_node_mappings
+      WHERE target_id=? AND local_node_id=?`).get(targetId, localNodeId) as { remote_node_token: string; remote_document_token: string; remote_parent_node_token: string | null; title: string } | undefined;
+    if (!row) return undefined;
+    return { nodeToken: row.remote_node_token, documentToken: row.remote_document_token, title: row.title, ...(row.remote_parent_node_token ? { parentNodeToken: row.remote_parent_node_token } : {}) };
+  }
+
+  savePublicationNodeMapping(input: { targetId: string; localNodeId: string; nodeKind: 'system' | 'module' | 'document'; logicalParentId?: string; title: string; nodeToken: string; documentToken: string; parentNodeToken?: string }): void {
+    const now = new Date().toISOString();
+    this.db.prepare(`INSERT INTO publication_node_mappings(target_id,local_node_id,node_kind,logical_parent_id,title,remote_node_token,remote_document_token,remote_parent_node_token,created_at,updated_at)
+      VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(target_id,local_node_id) DO UPDATE SET node_kind=excluded.node_kind,logical_parent_id=excluded.logical_parent_id,title=excluded.title,remote_node_token=excluded.remote_node_token,remote_document_token=excluded.remote_document_token,remote_parent_node_token=excluded.remote_parent_node_token,updated_at=excluded.updated_at`)
+      .run(input.targetId, input.localNodeId, input.nodeKind, input.logicalParentId ?? null, input.title, input.nodeToken, input.documentToken, input.parentNodeToken ?? null, now, now);
   }
 
   savePublication(input: { id: string; documentId: string; revision: number; targetId: string; nodeToken?: string; documentToken?: string; status: string; errorCategory?: string; result?: unknown; startedAt: string; finishedAt: string }): void {

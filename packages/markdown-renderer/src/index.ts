@@ -9,6 +9,7 @@ export class MarkdownRenderer {
   render(document: DocumentationModel, assetPaths: Record<string, string> = {}): string {
     const lines: string[] = [`# ${document.title}`, ''];
     if (document.sourceSnapshotId) lines.push(`> 来源快照：\`${document.sourceSnapshotId}\``, '');
+    if (document.classification) lines.push(`> 所属系统：${document.classification.system.name}  `, `> 业务模块：${document.classification.module.name}`, '');
     lines.push('## 功能简介', '', document.summary?.text ?? '待补充', '', '## 使用角色', '');
     lines.push(...(document.roles.length ? document.roles.map((item) => `- ${item.text}`) : ['待确认']), '', '## 使用场景', '');
     lines.push(...(document.scenarios.length ? document.scenarios.map((item) => `- ${item.text}`) : ['待确认']), '', '## 操作步骤', '');

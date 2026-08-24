@@ -4,7 +4,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Persistence } from '@bizdoc/persistence';
 import { PublishError, type Publisher } from '@bizdoc/publisher';
-import { AnalyzeProjectUseCase, AttachScreenshotUseCase, GenerateDocumentUseCase, PublishDocumentUseCase, ReviewDocumentUseCase, selectComposerFacts } from './index.js';
+import { AnalyzeProjectUseCase, AttachScreenshotUseCase, ClassifyDocumentUseCase, GenerateDocumentUseCase, PublishDocumentUseCase, ReviewDocumentUseCase, selectComposerFacts } from './index.js';
 
 const roots: string[] = [];
 afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))));
@@ -47,6 +47,110 @@ describe('AttachScreenshotUseCase', () => {
     expect(markdown).toContain('![First](../../../../assets/');
     expect(markdown).toContain('![Second](../../../../assets/');
     expect(markdown).not.toContain('](asset:');
+  });
+
+  it('rejects an unknown step before importing an asset', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'bizdoc-attach-invalid-step-')); roots.push(root); await mkdir(path.join(root, '.bizdoc'));
+    const persistence = new Persistence(root); persistence.migrate();
+    const document = { id: 'document:invalid-step', featureId: 'feature:invalid-step', title: 'Invalid step', roles: [], scenarios: [], steps: [{ id: 'step:valid', title: 'Valid', instruction: { text: 'Do it', evidenceIds: [], confidence: 'inferred' as const }, screenshots: [] }], fields: [], outcomes: [], notices: [], faqs: [], relatedFeatureIds: [], reviewItems: [], revision: 1 };
+    persistence.saveDocument(document, 'needs_review', path.join(root, 'revision-1.md')); persistence.close();
+    const png = path.join(root, 'screenshot.png'); await writeFile(png, Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64'));
+    await expect(new AttachScreenshotUseCase().execute(root, document.id, 'step:missing', png, 'Missing')).rejects.toThrow('Document section not found');
+    const verification = new Persistence(root); expect(verification.db.prepare('SELECT COUNT(*) AS count FROM assets').get()).toEqual({ count: 0 }); verification.close();
+  });
+});
+
+describe('ClassifyDocumentUseCase', () => {
+  it('preserves the approved revision and assets while creating a classified revision that requires review', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'bizdoc-classify-')); roots.push(root); await mkdir(path.join(root, '.bizdoc'));
+    await writeFile(path.join(root, '.bizdoc', 'project.yaml'), `version: 1\nproject:\n  name: sales-crm\n  display_name: 销售 CRM\nsources:\n  frontend: { path: ./frontend, framework: react }\n  backend: { path: ./backend, framework: spring-boot }\nanalysis: { include: [src/**], exclude: [], mappings: [] }\n`);
+    const assetPath = path.join(root, '.bizdoc', 'assets', 'page.png'); await mkdir(path.dirname(assetPath), { recursive: true }); await writeFile(assetPath, 'fixture');
+    const document = {
+      id: 'document:legacy', featureId: 'feature:legacy', title: '线索转化操作说明', roles: [], scenarios: [],
+      steps: [{ id: 'step:1', title: '转化', instruction: { text: '点击转化', evidenceIds: [], confidence: 'inferred' as const }, screenshots: [{ assetId: 'asset:page', alt: '线索转化页面' }] }],
+      fields: [], outcomes: [], notices: [], faqs: [], relatedFeatureIds: [],
+      reviewItems: [{ id: 'review:legacy', sectionId: 'document:legacy', message: '复核内容', severity: 'blocking' as const }],
+      sourceSnapshotId: 'snapshot:legacy', sourceCommits: { frontend: 'front-commit', backend: 'back-commit' }, revision: 1
+    };
+    const persistence = new Persistence(root); persistence.migrate();
+    persistence.saveAsset({ id: 'asset:page', hash: 'fixture-hash', mimeType: 'image/png', path: assetPath, width: 1, height: 1, size: 7 });
+    persistence.saveDocument(document, 'needs_review', path.join(root, 'revision-1.md')); persistence.approveDocument(document.id, 1);
+    const oldRevision = persistence.db.prepare('SELECT model_json,status,markdown_path FROM document_revisions WHERE document_id=? AND revision=1').get(document.id);
+    const oldAsset = persistence.db.prepare('SELECT * FROM assets WHERE id=?').get('asset:page'); persistence.close();
+
+    const result = await new ClassifyDocumentUseCase().execute(root, document.id, '线索管理', 'module:confirmed-leads');
+    expect(result).toMatchObject({ status: 'needs_review', document: { revision: 2, classification: { system: { name: '销售 CRM' }, module: { id: 'module:confirmed-leads', name: '线索管理' } } } });
+    expect(result.document.steps).toEqual(document.steps);
+    expect(result.document.sourceSnapshotId).toBe(document.sourceSnapshotId); expect(result.document.sourceCommits).toEqual(document.sourceCommits);
+    expect(result.document.reviewItems.slice(0, -1)).toEqual(document.reviewItems);
+    const markdown = await readFile(result.markdownPath, 'utf8');
+    expect(markdown).toContain('所属系统：销售 CRM'); expect(markdown).toContain('业务模块：线索管理'); expect(markdown).toContain('![线索转化页面](../../../../assets/page.png)');
+    const verification = new Persistence(root);
+    expect(verification.db.prepare('SELECT model_json,status,markdown_path FROM document_revisions WHERE document_id=? AND revision=1').get(document.id)).toEqual(oldRevision);
+    expect(verification.db.prepare('SELECT * FROM assets WHERE id=?').get('asset:page')).toEqual(oldAsset);
+    expect(verification.db.prepare('SELECT COUNT(*) AS count FROM assets').get()).toEqual({ count: 1 });
+    expect(verification.getDocument(document.id, 1)).toMatchObject({ status: 'approved', model: expect.not.objectContaining({ classification: expect.anything() }) });
+    expect(verification.getDocument(document.id)).toMatchObject({ status: 'needs_review', revision: 2 });
+    expect(verification.unresolvedBlockingReviewItems(document.id, 2)).toEqual(['review:legacy', `${document.id}:review:classification:2`]);
+    verification.close();
+
+    const publish = vi.fn<Publisher['publish']>().mockResolvedValue({ nodeToken: 'node', documentToken: 'doc', created: true });
+    await expect(new PublishDocumentUseCase().execute(root, document.id, 'target:test', { publish })).rejects.toThrow('REVIEW_REQUIRED');
+    expect(publish).not.toHaveBeenCalled();
+    new ReviewDocumentUseCase().execute(root, document.id, 2);
+    await expect(new PublishDocumentUseCase().execute(root, document.id, 'target:test', { publish })).resolves.toMatchObject({ nodeToken: 'node' });
+  });
+
+  it.each(['', '   ', '未分类'] as const)('reclassifies the placeholder module name %j without changing the approved revision', async (placeholderName) => {
+    const root = await mkdtemp(path.join(tmpdir(), 'bizdoc-classify-placeholder-')); roots.push(root); await mkdir(path.join(root, '.bizdoc'));
+    await writeFile(path.join(root, '.bizdoc', 'project.yaml'), `version: 1\nproject:\n  name: sales-crm\n  display_name: 销售 CRM\nsources:\n  frontend: { path: ./frontend, framework: react }\n  backend: { path: ./backend, framework: spring-boot }\nanalysis: { include: [src/**], exclude: [], mappings: [] }\n`);
+    const document = {
+      id: 'document:placeholder', featureId: 'feature:placeholder', title: 'Placeholder',
+      classification: { system: { id: 'system:crm', name: '销售 CRM' }, module: { id: 'module:placeholder', name: placeholderName } },
+      roles: [], scenarios: [], steps: [], fields: [], outcomes: [], notices: [], faqs: [], relatedFeatureIds: [], reviewItems: [], revision: 1
+    };
+    const persistence = new Persistence(root); persistence.migrate(); persistence.saveDocument(document, 'approved', '/tmp/revision-1.md');
+    const original = persistence.db.prepare('SELECT model_json,status FROM document_revisions WHERE document_id=? AND revision=1').get(document.id); persistence.close();
+
+    await expect(new ClassifyDocumentUseCase().execute(root, document.id, '线索管理')).resolves.toMatchObject({
+      status: 'needs_review', document: { revision: 2, classification: { module: { name: '线索管理' } } }
+    });
+    const verification = new Persistence(root);
+    expect(verification.db.prepare('SELECT model_json,status FROM document_revisions WHERE document_id=? AND revision=1').get(document.id)).toEqual(original);
+    expect(verification.getDocument(document.id)).toMatchObject({ revision: 2, status: 'needs_review' }); verification.close();
+  });
+
+  it.each([
+    ['an unregistered screenshot', false, 'SCREENSHOT_ASSET_MISSING'],
+    ['a missing screenshot file', true, 'SCREENSHOT_ASSET_UNAVAILABLE']
+  ] as const)('does not create a revision when the legacy document references %s', async (_label, registerAsset, expectedError) => {
+    const root = await mkdtemp(path.join(tmpdir(), 'bizdoc-classify-missing-')); roots.push(root); await mkdir(path.join(root, '.bizdoc'));
+    await writeFile(path.join(root, '.bizdoc', 'project.yaml'), `version: 1\nproject: { name: crm }\nsources:\n  frontend: { path: ./frontend, framework: react }\n  backend: { path: ./backend, framework: spring-boot }\nanalysis: { include: [src/**], exclude: [], mappings: [] }\n`);
+    const document = { id: 'document:missing', featureId: 'feature:missing', title: 'Missing asset', roles: [], scenarios: [], steps: [{ id: 'step:1', title: 'Step', instruction: { text: 'Do it', evidenceIds: [], confidence: 'inferred' as const }, screenshots: [{ assetId: 'asset:missing', alt: 'Missing' }] }], fields: [], outcomes: [], notices: [], faqs: [], relatedFeatureIds: [], reviewItems: [], revision: 1 };
+    const persistence = new Persistence(root); persistence.migrate();
+    if (registerAsset) persistence.saveAsset({ id: 'asset:missing', hash: 'missing-hash', mimeType: 'image/png', path: path.join(root, '.bizdoc', 'assets', 'missing.png'), width: 1, height: 1, size: 1 });
+    persistence.saveDocument(document, 'approved', path.join(root, 'revision-1.md')); persistence.close();
+
+    await expect(new ClassifyDocumentUseCase().execute(root, document.id, '线索管理')).rejects.toThrow(expectedError);
+    const verification = new Persistence(root);
+    expect(verification.db.prepare('SELECT COUNT(*) AS count FROM document_revisions WHERE document_id=?').get(document.id)).toEqual({ count: 1 });
+    expect(verification.getDocument(document.id)).toMatchObject({ revision: 1, status: 'approved' }); verification.close();
+    await expect(access(path.join(root, '.bizdoc', 'output', 'documents', 'document-missing', 'revision-2'))).rejects.toThrow();
+  });
+
+  it('rejects unapproved, placeholder-module, and repeated classification attempts', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'bizdoc-classify-reject-')); roots.push(root); await mkdir(path.join(root, '.bizdoc'));
+    await writeFile(path.join(root, '.bizdoc', 'project.yaml'), `version: 1\nproject: { name: crm }\nsources:\n  frontend: { path: ./frontend, framework: react }\n  backend: { path: ./backend, framework: spring-boot }\nanalysis: { include: [src/**], exclude: [], mappings: [] }\n`);
+    const base = { id: 'document:legacy', featureId: 'feature:legacy', title: 'Legacy', roles: [], scenarios: [], steps: [], fields: [], outcomes: [], notices: [], faqs: [], relatedFeatureIds: [], reviewItems: [] };
+    const persistence = new Persistence(root); persistence.migrate(); persistence.saveDocument({ ...base, revision: 1 }, 'needs_review', '/tmp/revision-1.md'); persistence.close();
+    const useCase = new ClassifyDocumentUseCase();
+    await expect(useCase.execute(root, base.id, '线索管理')).rejects.toThrow('REVIEW_REQUIRED');
+    const approval = new Persistence(root); approval.approveDocument(base.id, 1); approval.close();
+    await expect(useCase.execute(root, base.id, '未分类')).rejects.toThrow('A confirmed business module name is required');
+    await expect(useCase.execute(root, base.id, '线索管理', '   ')).rejects.toThrow('non-empty --module-id');
+    await expect(useCase.execute(root, base.id, '线索管理')).resolves.toMatchObject({ document: { revision: 2 } });
+    await expect(useCase.execute(root, base.id, '其他模块')).rejects.toThrow('DOCUMENT_ALREADY_CLASSIFIED');
+    const verification = new Persistence(root); expect(verification.db.prepare('SELECT COUNT(*) AS count FROM document_revisions').get()).toEqual({ count: 2 }); verification.close();
   });
 });
 
@@ -177,6 +281,10 @@ describe('AnalyzeProjectUseCase', () => {
       expect(second.snapshot.diagnostics?.parseFailures).toEqual([]);
       const firstDocument = (await new GenerateDocumentUseCase().execute(root)).documents[0];
       if (!firstDocument) throw new Error('Fixture document was not generated');
+      expect(firstDocument.classification).toEqual({
+        system: { id: expect.stringMatching(/^system:/), name: 'fixture' },
+        module: { id: expect.stringMatching(/^module:/), name: '未分类' }
+      });
       new ReviewDocumentUseCase().execute(root, firstDocument.id, firstDocument.revision);
       const secondDocument = (await new GenerateDocumentUseCase().execute(root, firstDocument.featureId)).documents[0];
       expect(secondDocument?.revision).toBe(firstDocument.revision + 1);

@@ -3,7 +3,7 @@ document: current-handoff
 updated: 2026-08-24
 current_milestone: null
 active_work_items: []
-last_validated_commit: null
+last_validated_commit: a8d7339
 ---
 
 # 当前交接
@@ -27,18 +27,17 @@ last_validated_commit: null
 
 ## 下一项明确行动
 
-等待用户确认本批 `v0.1.1` 实现与验收结果；收到明确提交请求后执行 Git commit。产品继续开发前，从路线图候选中确认范围并建立新的 WI。
+本批 `v0.1.1` 实现已提交并通过质量门。产品继续开发前，从路线图候选中确认范围并建立新的 WI。
 
 ## 阻塞与待决策
 
-- 当前无外部阻塞项；工作树尚未提交，按仓库规则必须等待用户明确请求。
+- 当前无外部阻塞项；工作树干净。后续工作必须先建立并登记新的 WI。
 - Playwright 自动登录与页面遍历不属于 WI-0002，相关策略仍待后续里程碑确认。
 
 ## 验证基线
 
-- 运行时代码最后验证提交：`1119e7f`。
-- 包含本交接文件的文档治理变更基于该提交完成，并通过完整 `pnpm check`。
-- 当前未提交工作树基于 `67c95dd`；因此 frontmatter 的 `last_validated_commit` 暂为 `null`。
+- 运行时代码最后验证提交：`a8d7339`。
+- `a8d7339` 包含本批运行时代码、测试和文档治理变更，并在提交前通过完整 `pnpm check`；本次交接基线只更新文档状态。
 - `2026-08-24` 完整 `pnpm check` 通过：19 个测试文件、115 个测试，以及文档检查、lint、类型检查和构建全部通过。
 
 ## 外部状态与敏感信息

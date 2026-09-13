@@ -352,7 +352,9 @@ export class FeishuPublisher implements Publisher {
         existingChildCount = children.data?.items?.length ?? 0;
       }
       const blocks = toFeishuBlocks(input.document);
-      const imageBlockIds: Record<string, string> = {};
+      // Keep one remote block binding per screenshot occurrence. An asset can be
+      // referenced by multiple screenshots, so assetId alone is not unique.
+      const imageBlockBindings: Array<{ assetId: string; blockId: string }> = [];
       let blockIndex = 0;
       while (blockIndex < blocks.length) {
         const imageBlock = blocks[blockIndex];
@@ -360,7 +362,7 @@ export class FeishuPublisher implements Publisher {
           const createdImage = await this.client.request<{ data?: { children?: Array<{ block_id?: string }> } }>('POST', `/docx/v1/documents/${documentToken}/blocks/${documentToken}/children`, { children: [{ block_type: 27, image: {} }] });
           const imageBlockId = createdImage.data?.children?.[0]?.block_id;
           if (!imageBlockId) throw new PublishError(`Feishu did not return an image block ID for ${imageBlock.assetId}`, 'CONTENT', false);
-          imageBlockIds[imageBlock.assetId] = imageBlockId;
+          imageBlockBindings.push({ assetId: imageBlock.assetId, blockId: imageBlockId });
           blockIndex += 1; continue;
         }
         const end = Math.min(blockIndex + 50, blocks.length);
@@ -370,9 +372,12 @@ export class FeishuPublisher implements Publisher {
         await this.client.request('POST', `/docx/v1/documents/${documentToken}/blocks/${documentToken}/descendant`, { children_id: payload.children_id, descendants: payload.descendants });
         blockIndex = chunkEnd;
       }
-      for (const { screenshot, asset } of resolvedScreenshotAssets) {
-        const imageBlockId = imageBlockIds[screenshot.assetId];
-        if (!imageBlockId) throw new PublishError(`Feishu did not return an image block mapping for ${screenshot.assetId}`, 'CONTENT', false);
+      for (const [occurrenceIndex, { screenshot, asset }] of resolvedScreenshotAssets.entries()) {
+        const binding = imageBlockBindings[occurrenceIndex];
+        if (!binding || binding.assetId !== screenshot.assetId) {
+          throw new PublishError(`Feishu did not return an image block mapping for ${screenshot.assetId} (occurrence ${occurrenceIndex + 1})`, 'CONTENT', false);
+        }
+        const imageBlockId = binding.blockId;
         const imageToken = await this.client.uploadImage(imageBlockId, asset.path, asset.mimeType);
         await this.client.request('PATCH', `/docx/v1/documents/${documentToken}/blocks/${imageBlockId}`, { replace_image: { token: imageToken } });
       }

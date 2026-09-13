@@ -164,6 +164,51 @@ describe('Feishu blocks', () => {
     expect(client.calls[7]?.body).toEqual({ start_index: 0, end_index: 2 });
   });
 
+  it('uploads and patches every screenshot occurrence when an asset is reused', async () => {
+    class ReusedAssetClient extends FeishuHttpClient {
+      readonly calls: Array<{ method: string; route: string; body?: unknown }> = [];
+      private nextImageBlock = 0;
+
+      override async request<T>(method: string, route: string, body?: unknown): Promise<T> {
+        this.calls.push({ method, route, ...(body === undefined ? {} : { body }) });
+        if (method === 'POST' && route.endsWith('/children')) {
+          this.nextImageBlock += 1;
+          return { data: { children: [{ block_id: `image-block-${this.nextImageBlock}` }] } } as T;
+        }
+        if (method === 'GET') return { data: { items: [] } } as T;
+        return {} as T;
+      }
+
+      override async uploadImage(parentNode: string): Promise<string> {
+        this.calls.push({ method: 'UPLOAD', route: parentNode });
+        return `uploaded-${parentNode}`;
+      }
+    }
+
+    const client = new ReusedAssetClient({ appId: 'test', appSecret: 'test' }, 'http://unused');
+    const publisher = new FeishuPublisher(client, { id: 'target', spaceId: 'space' });
+    await publisher.publish({
+      targetId: 'target', existing: { nodeToken: 'node', documentToken: 'doc' },
+      assets: { 'asset:shared': { id: 'asset:shared', path: process.execPath, mimeType: 'image/png' } },
+      document: {
+        id: 'document:reused-image', featureId: 'feature:1', title: 'Reused screenshot', roles: [], scenarios: [],
+        steps: [
+          { id: 'step:1', title: 'First step', instruction: { text: 'Do the first thing', evidenceIds: [], confidence: 'inferred' }, screenshots: [{ assetId: 'asset:shared', alt: 'First screenshot' }] },
+          { id: 'step:2', title: 'Second step', instruction: { text: 'Do the second thing', evidenceIds: [], confidence: 'inferred' }, screenshots: [{ assetId: 'asset:shared', alt: 'Second screenshot' }] }
+        ],
+        fields: [], outcomes: [], notices: [], faqs: [], relatedFeatureIds: [], reviewItems: [], revision: 1
+      }
+    });
+
+    expect(client.calls.filter((call) => call.method === 'UPLOAD').map((call) => call.route))
+      .toEqual(['image-block-1', 'image-block-2']);
+    expect(client.calls.filter((call) => call.method === 'PATCH').map((call) => ({ route: call.route, body: call.body })))
+      .toEqual([
+        { route: '/docx/v1/documents/doc/blocks/image-block-1', body: { replace_image: { token: 'uploaded-image-block-1' } } },
+        { route: '/docx/v1/documents/doc/blocks/image-block-2', body: { replace_image: { token: 'uploaded-image-block-2' } } }
+      ]);
+  });
+
   it('keeps existing children when image upload fails', async () => {
     class FailingUploadClient extends FeishuHttpClient {
       readonly calls: Array<{ method: string; route: string }> = [];

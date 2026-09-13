@@ -2,6 +2,10 @@
 
 本文件按版本记录已经交付的能力。未来候选功能见[当前路线图](./current/ROADMAP.md)，实施细节和证据见对应工作项或里程碑。
 
+## Unreleased
+
+- 修复同一截图资源被多个步骤引用时飞书图片块映射覆盖的问题；每个截图出现位置现在都会独立上传和绑定。完整证据见 [WI-0004](./work-items/completed/WI-0004-feishu-image-occurrence-binding.md)。
+
 ## v0.1.1 - 2026-08-24
 
 - 提供可通过 `pnpm link:cli` 安装的本地全局 `bizdoc` 开发入口，并从当前目录向上自动发现工作空间。
